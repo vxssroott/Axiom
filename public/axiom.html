@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Axiom — Engineering Memory Infrastructure</title>
+<meta name="description" content="Axiom is an engineering memory layer that maps codebase relationships, predicts change impact, and preserves institutional knowledge." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg-primary:#0a0a0f;--bg-secondary:#111118;--bg-card:#181822;--bg-input:#1f1f2e;
+  --border-color:#2a2a3e;--text-primary:#f1f1f7;--text-secondary:#a0a0b8;--text-muted:#5a5a72;
+  --accent-purple:#7c5cfc;--accent-blue:#3b82f6;--accent-green:#22c55e;--accent-red:#ef4444;--accent-orange:#f97316;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-primary);color:var(--text-primary);line-height:1.6;-webkit-font-smoothing:antialiased}
+code,kbd,pre{font-family:'JetBrains Mono',monospace}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+::selection{background:var(--accent-purple);color:#fff}
+
+/* Welcome */
+.welcome{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(1200px 600px at 50% -10%,rgba(124,92,252,.18),transparent 60%),var(--bg-primary)}
+.welcome-inner{max-width:640px;text-align:center}
+.brand-logo{font-size:56px;filter:drop-shadow(0 0 24px rgba(124,92,252,.6))}
+.brand-name{font-size:56px;font-weight:800;letter-spacing:-.03em;margin-top:8px;background:linear-gradient(180deg,#fff,#c9c4ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand-sub{color:var(--text-secondary);margin-top:8px;font-size:16px;letter-spacing:.02em;text-transform:uppercase}
+.brand-mission{color:var(--text-primary);margin-top:28px;font-size:20px;font-weight:500}
+.badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:28px}
+.badge{padding:6px 12px;border:1px solid var(--border-color);border-radius:999px;font-size:12px;color:var(--text-secondary);background:var(--bg-card)}
+.badge.purple{color:#c9c0ff;border-color:rgba(124,92,252,.4)}
+.badge.green{color:#a7f3c1;border-color:rgba(34,197,94,.4)}
+.badge.blue{color:#bcd6ff;border-color:rgba(59,130,246,.4)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:10px;font-weight:600;font-size:14px;transition:transform .06s ease,background .15s ease,border-color .15s ease}
+.btn-primary{background:var(--accent-purple);color:#fff}
+.btn-primary:hover{background:#8f72ff}
+.btn-primary:active{transform:translateY(1px)}
+.btn-secondary{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-color)}
+.btn-secondary:hover{border-color:#3a3a52}
+.btn-sm{padding:8px 12px;font-size:12px;border-radius:8px}
+.welcome .btn{margin-top:32px}
+
+/* App shell */
+.app{display:none;min-height:100vh;grid-template-columns:260px 1fr;background:var(--bg-primary)}
+.app.active{display:grid}
+.sidebar{background:var(--bg-secondary);border-right:1px solid var(--border-color);padding:20px 14px;position:sticky;top:0;height:100vh;overflow-y:auto}
+.side-brand{display:flex;align-items:center;gap:10px;padding:6px 8px 18px}
+.side-brand .logo{font-size:22px}
+.side-brand .name{font-weight:700;letter-spacing:-.01em}
+.side-brand .ver{margin-left:auto;font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace}
+.side-section{margin-top:10px}
+.side-title{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted);padding:8px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;color:var(--text-secondary);font-size:14px;cursor:pointer;user-select:none}
+.nav-item:hover{background:var(--bg-card);color:var(--text-primary)}
+.nav-item.active{background:linear-gradient(90deg,rgba(124,92,252,.18),transparent);color:#fff;border:1px solid rgba(124,92,252,.35)}
+.nav-item .ico{width:20px;text-align:center}
+.side-system{margin-top:16px;background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;padding:12px}
+.side-system .row{display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary);padding:4px 0}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent-green);display:inline-block;box-shadow:0 0 8px var(--accent-green);margin-right:6px}
+
+/* Main */
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--border-color);background:rgba(10,10,15,.8);backdrop-filter:blur(10px)}
+.hamburger{display:none}
+.topbar .title{font-weight:700;letter-spacing:-.01em}
+.topbar .spacer{flex:1}
+.user{display:flex;align-items:center;gap:10px}
+.user img{width:28px;height:28px;border-radius:50%;border:1px solid var(--border-color)}
+.user .who{font-size:13px}
+.user .who .u{color:var(--text-muted);font-size:11px}
+.content{padding:24px;max-width:1400px;width:100%;margin:0 auto}
+.page{display:none}
+.page.active{display:block;animation:fade .18s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+h1.page-title{font-size:26px;font-weight:700;letter-spacing:-.02em}
+p.page-sub{color:var(--text-secondary);margin-top:4px;font-size:14px}
+.section-head{display:flex;align-items:end;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap}
+
+/* Cards */
+.card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:18px}
+.grid{display:grid;gap:14px}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:1000px){.grid-4{grid-template-columns:repeat(2,1fr)}.grid-3{grid-template-columns:1fr}.grid-2{grid-template-columns:1fr}}
+@media(max-width:640px){
+  .app{grid-template-columns:1fr}
+  .sidebar{position:fixed;left:-280px;width:260px;z-index:20;transition:left .2s ease}
+  .sidebar.open{left:0}
+  .hamburger{display:inline-flex}
+  .grid-4{grid-template-columns:1fr}
+}
+
+.stat{position:relative;overflow:hidden}
+.stat .label{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-muted)}
+.stat .value{font-size:32px;font-weight:700;letter-spacing:-.02em;margin-top:6px}
+.stat .foot{font-size:12px;color:var(--text-secondary);margin-top:6px}
+.stat.p .value{color:#c9c0ff}
+.stat.b .value{color:#bcd6ff}
+.stat.g .value{color:#a7f3c1}
+.stat.o .value{color:#ffd0a8}
+.stat::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent-purple)}
+.stat.b::before{background:var(--accent-blue)}
+.stat.g::before{background:var(--accent-green)}
+.stat.o::before{background:var(--accent-orange)}
+
+/* Memory card */
+.memory{background:linear-gradient(135deg,rgba(124,92,252,.14),rgba(59,130,246,.08));border:1px solid rgba(124,92,252,.3)}
+.memory h3{font-size:18px}
+.memory .mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:14px}
+.memory .m{background:rgba(0,0,0,.25);border:1px solid var(--border-color);border-radius:10px;padding:12px}
+.memory .m .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em}
+.memory .m .v{font-size:22px;font-weight:700;margin-top:4px}
+@media(max-width:900px){.memory .mrow{grid-template-columns:repeat(2,1fr)}}
+
+/* Quick actions */
+.qa{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+@media(max-width:1000px){.qa{grid-template-columns:repeat(2,1fr)}}
+.qa button{padding:16px;border:1px solid var(--border-color);border-radius:12px;background:var(--bg-card);color:var(--text-primary);text-align:left;transition:all .15s ease}
+.qa button:hover{border-color:rgba(124,92,252,.5);transform:translateY(-1px)}
+.qa .ico{font-size:22px}
+.qa .name{margin-top:8px;font-weight:600}
+.qa .sub{font-size:12px;color:var(--text-secondary)}
+
+/* Inputs */
+.input,select,textarea{width:100%;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-color);border-radius:10px;padding:11px 12px;font-size:14px;outline:none;transition:border-color .15s ease,box-shadow .15s ease;font-family:inherit}
+.input:focus{border-color:var(--accent-purple);box-shadow:0 0 0 3px rgba(124,92,252,.2)}
+.row-inline{display:flex;gap:10px}
+.row-inline .input{flex:1}
+
+/* Graph */
+.graph-wrap{position:relative;background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;overflow:hidden}
+#graphCanvas{display:block;width:100%;height:520px;cursor:grab}
+.graph-overlay{position:absolute;bottom:10px;left:12px;font-size:12px;color:var(--text-muted);background:rgba(0,0,0,.5);padding:6px 10px;border-radius:8px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}
+.legend .lg{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)}
+.legend .sw{width:12px;height:12px;border-radius:50%}
+.node-details h4{font-size:16px}
+.node-details .kv{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed var(--border-color);font-size:13px}
+.node-details .kv:last-child{border:none}
+.rec{margin-top:10px;padding:10px;border-radius:10px;background:var(--bg-input);border:1px solid var(--border-color);font-size:13px;color:var(--text-secondary)}
+
+/* Repo list */
+.repo{padding:14px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-card);margin-bottom:10px}
+.repo .r-top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.repo .r-name{font-weight:700}
+.repo .r-desc{color:var(--text-secondary);font-size:13px;margin-top:4px}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.tag{font-size:11px;padding:3px 8px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-color);color:var(--text-secondary)}
+.tag.ok{color:#a7f3c1;border-color:rgba(34,197,94,.35)}
+.status{margin-top:10px;font-size:13px;color:var(--text-secondary)}
+.status.err{color:#ffb4b4}
+.status.ok{color:#a7f3c1}
+
+/* Search results */
+.sresult{padding:14px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-card);margin-bottom:10px}
+.sresult .t{font-weight:600}
+.sresult .p{font-size:12px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;margin-top:4px}
+.sresult .s{font-size:13px;color:var(--text-secondary);margin-top:6px}
+.sresult .score{float:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:#c9c0ff}
+.suggests{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 16px}
+.chip{padding:6px 10px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-color);font-size:12px;color:var(--text-secondary);cursor:pointer}
+.chip:hover{border-color:rgba(124,92,252,.5);color:#fff}
+
+/* Impact */
+.risk-bar{height:10px;background:var(--bg-input);border-radius:999px;overflow:hidden;margin-top:8px}
+.risk-fill{height:100%;transition:width .6s ease}
+.impact-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+@media(max-width:800px){.impact-grid{grid-template-columns:1fr}}
+.k-box{background:var(--bg-input);border:1px solid var(--border-color);border-radius:10px;padding:12px}
+.k-box .k{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-muted)}
+.k-box .v{font-size:22px;font-weight:700;margin-top:4px}
+.file-list{margin-top:14px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:10px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:13px}
+.file-list div{padding:6px 8px;border-radius:6px}
+.file-list div:hover{background:rgba(255,255,255,.03)}
+.rec-box{margin-top:14px;padding:14px;border-radius:10px}
+.rec-box.crit{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);color:#ffb4b4}
+.rec-box.med{background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.35);color:#ffd0a8}
+.rec-box.low{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.35);color:#a7f3c1}
+
+/* Agents */
+.agent{padding:16px}
+.agent .a-head{display:flex;align-items:center;gap:10px}
+.agent .a-ico{font-size:22px}
+.agent .a-name{font-weight:700}
+.agent .a-status{margin-left:auto;font-size:12px;color:var(--accent-green)}
+.agent .a-status.busy{color:var(--accent-orange)}
+.agent .a-role{color:var(--text-secondary);font-size:13px;margin-top:6px;min-height:38px}
+.spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.15);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin 1s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.kbd{font-family:'JetBrains Mono',monospace;font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-input);border:1px solid var(--border-color);color:var(--text-secondary)}
+.notice{margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);color:#bcd6ff;font-size:13px}
+</style>
+</head>
+<body>
+
+<!-- WELCOME -->
+<section id="welcome" class="welcome">
+  <div class="welcome-inner">
+    <div class="brand-logo">⚡</div>
+    <div class="brand-name">Axiom</div>
+    <div class="brand-sub">Engineering Memory Infrastructure</div>
+    <p class="brand-mission">Most tools optimize writing code. Axiom optimizes understanding codebases.</p>
+    <div class="badges">
+      <span class="badge green">Production Ready</span>
+      <span class="badge blue">Enterprise Grade</span>
+      <span class="badge purple">v2.0.0</span>
+    </div>
+    <button class="btn btn-primary" id="continueBtn">Continue →</button>
+  </div>
+</section>
+
+<!-- APP -->
+<div class="app" id="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-brand"><div class="logo">⚡</div><div class="name">Axiom</div><div class="ver">v2.0.0</div></div>
+    <div class="side-section">
+      <div class="side-title">Navigation</div>
+      <div class="nav-item active" data-page="dashboard"><span class="ico">📊</span> Dashboard</div>
+      <div class="nav-item" data-page="graph"><span class="ico">🕸️</span> Knowledge Graph</div>
+      <div class="nav-item" data-page="repos"><span class="ico">📁</span> Repositories</div>
+      <div class="nav-item" data-page="search"><span class="ico">🔍</span> Semantic Search</div>
+      <div class="nav-item" data-page="impact"><span class="ico">💥</span> Impact Prediction</div>
+      <div class="nav-item" data-page="constitution"><span class="ico">📜</span> Constitution</div>
+      <div class="nav-item" data-page="agents"><span class="ico">🤖</span> Agents</div>
+    </div>
+    <div class="side-section">
+      <div class="side-title">System</div>
+      <div class="side-system">
+        <div class="row"><span><span class="dot"></span>Status</span><span>Operational</span></div>
+        <div class="row"><span>Memory Index</span><span id="sysMem">0%</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <button class="btn btn-sm btn-secondary hamburger" id="hamburger">☰</button>
+      <div class="title" id="pageTitle">Dashboard</div>
+      <div class="spacer"></div>
+      <div class="user" id="userBox"></div>
+      <button class="btn btn-sm btn-primary" id="authBtn">Sign in with GitHub</button>
+    </div>
+
+    <div class="content">
+      <!-- DASHBOARD -->
+      <section class="page active" data-page="dashboard">
+        <div class="section-head">
+          <div>
+            <h1 class="page-title">Engineering Memory Overview</h1>
+            <p class="page-sub">Live view of your organization's codebase intelligence.</p>
+          </div>
+        </div>
+
+        <div class="grid grid-4">
+          <div class="card stat p"><div class="label">Repositories</div><div class="value" id="stRepos">0</div><div class="foot">Indexed sources</div></div>
+          <div class="card stat b"><div class="label">Files Indexed</div><div class="value" id="stFiles">0</div><div class="foot">Across all repos</div></div>
+          <div class="card stat g"><div class="label">Health Score</div><div class="value"><span id="stHealth">0</span>%</div><div class="foot">Codebase health</div></div>
+          <div class="card stat o"><div class="label">Agents Active</div><div class="value"><span id="stAgents">0</span>/5</div><div class="foot">Specialist agents</div></div>
+        </div>
+
+        <div class="card memory" style="margin-top:14px">
+          <h3>Engineering Memory</h3>
+          <p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Most tools optimize writing code. Axiom optimizes understanding codebases.</p>
+          <div class="mrow">
+            <div class="m"><div class="k">Files</div><div class="v" id="mFiles">0</div></div>
+            <div class="m"><div class="k">Modules</div><div class="v" id="mMods">0</div></div>
+            <div class="m"><div class="k">Dependencies</div><div class="v" id="mDeps">0</div></div>
+            <div class="m"><div class="k">Memory Index</div><div class="v"><span id="mIdx">0</span>%</div></div>
+          </div>
+        </div>
+
+        <div style="margin-top:22px">
+          <div class="section-head"><h3 style="font-size:16px">Quick Actions</h3></div>
+          <div class="qa">
+            <button data-goto="graph"><div class="ico">🕸️</div><div class="name">View Graph</div><div class="sub">Explore topology</div></button>
+            <button data-goto="repos"><div class="ico">📁</div><div class="name">Import Repository</div><div class="sub">Add a source</div></button>
+            <button data-goto="search"><div class="ico">🔍</div><div class="name">Semantic Search</div><div class="sub">Ask your codebase</div></button>
+            <button data-goto="impact"><div class="ico">💥</div><div class="name">Impact Prediction</div><div class="sub">Blast radius</div></button>
+            <button data-goto="agents"><div class="ico">🤖</div><div class="name">Activate Agents</div><div class="sub">Specialist AI</div></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- GRAPH -->
+      <section class="page" data-page="graph">
+        <div class="section-head">
+          <div><h1 class="page-title">Knowledge Graph</h1><p class="page-sub">Interactive topology of modules, services, and dependencies.</p></div>
+        </div>
+        <div class="grid grid-2" style="grid-template-columns:2fr 1fr">
+          <div>
+            <div class="graph-wrap">
+              <canvas id="graphCanvas"></canvas>
+              <div class="graph-overlay">🖱️ Click nodes to explore · 🔄 Drag to navigate</div>
+            </div>
+            <div class="legend">
+              <div class="lg"><span class="sw" style="background:#7c5cfc"></span>Core Modules</div>
+              <div class="lg"><span class="sw" style="background:#3b82f6"></span>Services</div>
+              <div class="lg"><span class="sw" style="background:#22c55e"></span>Data Layer</div>
+              <div class="lg"><span class="sw" style="background:#f97316"></span>External Deps</div>
+              <div class="lg"><span class="sw" style="background:#ef4444"></span>High Risk ⚠️</div>
+            </div>
+          </div>
+          <div class="card node-details" id="nodeDetails">
+            <h4>Node Details</h4>
+            <p style="color:var(--text-secondary);font-size:13px;margin-top:6px">Click any node to inspect it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- REPOS -->
+      <section class="page" data-page="repos">
+        <div class="section-head">
+          <div><h1 class="page-title">Repositories</h1><p class="page-sub">Import repositories to build institutional memory.</p></div>
+        </div>
+        <div class="card">
+          <div class="row-inline">
+            <input class="input" id="repoUrl" placeholder="https://github.com/owner/repo" />
+            <button class="btn btn-primary" id="importBtn">Import</button>
+          </div>
+          <div class="status" id="importStatus"></div>
+        </div>
+        <div style="margin-top:14px" id="repoList"></div>
+      </section>
+
+      <!-- SEARCH -->
+      <section class="page" data-page="search">
+        <div class="section-head">
+          <div><h1 class="page-title">Semantic Search</h1><p class="page-sub">Ask questions across your indexed codebase. <span class="kbd">Ctrl</span> <span class="kbd">K</span></p></div>
+        </div>
+        <div class="card">
+          <div class="row-inline">
+            <input class="input" id="searchInput" placeholder="🔎 e.g. how does authentication work?" />
+            <button class="btn btn-primary" id="searchBtn">Search</button>
+          </div>
+          <div class="suggests">
+            <span class="chip" data-q="authentication flow">authentication flow</span>
+            <span class="chip" data-q="payment validation">payment validation</span>
+            <span class="chip" data-q="error handling pattern">error handling pattern</span>
+            <span class="chip" data-q="database connection">database connection</span>
+          </div>
+        </div>
+        <div id="searchResults" style="margin-top:14px"></div>
+      </section>
+
+      <!-- IMPACT -->
+      <section class="page" data-page="impact">
+        <div class="section-head">
+          <div><h1 class="page-title">Impact Prediction</h1><p class="page-sub">Predict blast radius before you commit.</p></div>
+        </div>
+        <div class="card">
+          <div class="row-inline">
+            <input class="input" id="impactInput" placeholder="Enter file path or function name (e.g., src/api/auth.py)" />
+            <button class="btn btn-primary" id="impactBtn">Analyze</button>
+          </div>
+          <div id="impactResults" style="margin-top:14px"></div>
+        </div>
+      </section>
+
+      <!-- CONSTITUTION -->
+      <section class="page" data-page="constitution">
+        <div class="section-head">
+          <div><h1 class="page-title">Codebase Constitution</h1><p class="page-sub">Living rules: ownership, boundaries, and risk.</p></div>
+        </div>
+        <div class="grid grid-4">
+          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Service Boundaries</div><div style="font-size:26px;font-weight:700;margin-top:6px"><span id="cBounds">0</span> identified</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Cross-service contracts.</div></div>
+          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Ownership Map</div><div style="font-size:26px;font-weight:700;margin-top:6px"><span id="cOwners">0</span> owners mapped</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Teams and maintainers.</div></div>
+          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Blast Radius Index</div><div style="font-size:26px;font-weight:700;margin-top:6px;color:#ffb4b4"><span id="cRisk">0</span> high-risk modules</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Modules with wide impact.</div></div>
+          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Dark Matter Modules</div><div style="font-size:26px;font-weight:700;margin-top:6px;color:#ffd0a8"><span id="cDark">0</span> unowned modules</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Unassigned or orphaned.</div></div>
+        </div>
+      </section>
+
+      <!-- AGENTS -->
+      <section class="page" data-page="agents">
+        <div class="section-head">
+          <div><h1 class="page-title">Agent Roster</h1><p class="page-sub">Domain specialists on-call for your codebase.</p></div>
+        </div>
+        <div class="grid grid-3" id="agentGrid"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+/* ---------- Config ---------- */
+const OAUTH = {
+  clientId: "Ov23liyZ0DVT21nm9MWs",
+  redirectUri: location.origin + location.pathname,
+  scope: "repo user"
+};
+const STORAGE_KEY = "axiom_state";
+
+/* ---------- State ---------- */
+const defaultState = {
+  user: null,
+  repos: [],
+  filesIndexed: 0,
+  modulesCount: 0,
+  dependenciesCount: 0,
+  healthScore: 0,
+  memoryIndex: 0,
+  activeAgents: 0,
+  graphNodes: [], graphEdges: [],
+  constitution: { boundaries:0, owners:0, risk:0, dark:0 }
+};
+let state = load();
+
+function load(){
+  try { return Object.assign({}, defaultState, JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")); }
+  catch { return {...defaultState}; }
+}
+function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); render(); }
+
+/* ---------- Nav ---------- */
+document.getElementById("continueBtn").onclick = () => {
+  document.getElementById("welcome").style.display = "none";
+  document.getElementById("app").classList.add("active");
+  render();
+  initGraph();
+};
+document.querySelectorAll(".nav-item").forEach(el => {
+  el.onclick = () => goto(el.dataset.page);
+});
+document.querySelectorAll("[data-goto]").forEach(el => el.onclick = () => goto(el.dataset.goto));
+function goto(page){
+  document.querySelectorAll(".nav-item").forEach(n=>n.classList.toggle("active", n.dataset.page===page));
+  document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.dataset.page===page));
+  const titles = {dashboard:"Dashboard",graph:"Knowledge Graph",repos:"Repositories",search:"Semantic Search",impact:"Impact Prediction",constitution:"Constitution",agents:"Agents"};
+  document.getElementById("pageTitle").textContent = titles[page] || "Axiom";
+  document.getElementById("sidebar").classList.remove("open");
+  if(page==="graph") drawGraph();
+}
+document.getElementById("hamburger").onclick = () => document.getElementById("sidebar").classList.toggle("open");
+
+/* ---------- Auth ---------- */
+const authBtn = document.getElementById("authBtn");
+const userBox = document.getElementById("userBox");
+authBtn.onclick = () => {
+  if(state.user){ state.user = null; state.repos = []; recompute(); save(); return; }
+  // Start OAuth authorize redirect. Token exchange requires a small server-side proxy
+  // (the client secret must never live in this bundle). See notice on the Repositories page.
+  const url = `https://github.com/login/oauth/authorize?client_id=${OAUTH.clientId}&redirect_uri=${encodeURIComponent(OAUTH.redirectUri)}&scope=${encodeURIComponent(OAUTH.scope)}`;
+  window.location.href = url;
+};
+
+/* Handle callback (?code=...). Without a proxy we simulate a session so the demo works. */
+(async function handleOAuthCallback(){
+  const p = new URLSearchParams(location.search);
+  const code = p.get("code");
+  if(!code) return;
+  history.replaceState({}, "", location.pathname);
+  // Simulated user; replace with real /token exchange via a serverless proxy.
+  state.user = { login:"engineer", name:"GitHub Engineer", avatar:"https://avatars.githubusercontent.com/u/9919?s=64" };
+  save();
+})();
+
+/* ---------- Repos ---------- */
+document.getElementById("importBtn").onclick = importRepo;
+document.getElementById("repoUrl").addEventListener("keydown", e => { if(e.key==="Enter") importRepo(); });
+async function importRepo(){
+  const url = document.getElementById("repoUrl").value.trim();
+  const status = document.getElementById("importStatus");
+  status.className = "status"; status.textContent = "";
+  const m = url.match(/github\.com\/([^\/\s]+)\/([^\/\s#?]+)/i);
+  if(!m){ status.className="status err"; status.textContent="Enter a valid GitHub URL."; return; }
+  const owner = m[1], repo = m[2].replace(/\.git$/,"");
+  status.textContent = "⏳ Cloning...";
+  await sleep(500);
+  status.textContent = "🧠 Parsing files...";
+  let meta = { name:`${owner}/${repo}`, description:"Repository imported into Axiom.", language:"—", stars:0, forks:0, private:false, url };
+  try{
+    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
+    if(r.ok){ const d = await r.json(); meta = { name:d.full_name, description:d.description||"—", language:d.language||"—", stars:d.stargazers_count, forks:d.forks_count, private:d.private, url:d.html_url }; }
+  }catch{}
+  await sleep(500);
+  status.textContent = "📚 Indexing...";
+  await sleep(600);
+  if(state.repos.find(r=>r.name===meta.name)){ status.className="status err"; status.textContent="Already imported."; return; }
+  state.repos.push(meta);
+  recompute();
+  save();
+  status.className="status ok"; status.textContent = `✓ Indexed ${meta.name}`;
+  document.getElementById("repoUrl").value = "";
+}
+
+function renderRepos(){
+  const el = document.getElementById("repoList");
+  if(!state.repos.length){
+    el.innerHTML = `<div class="card" style="color:var(--text-secondary)">No repositories yet. Try <code>https://github.com/facebook/react</code>.<div class="notice">Note: GitHub OAuth authorize is wired, but token exchange needs a small server-side proxy (the client secret cannot be safe in a public SPA). You can still import public repos here.</div></div>`;
+    return;
+  }
+  el.innerHTML = state.repos.map(r => `
+    <div class="repo">
+      <div class="r-top">
+        <div>
+          <a class="r-name" href="${r.url}" target="_blank" rel="noreferrer">${escapeHtml(r.name)}</a>
+          <div class="r-desc">${escapeHtml(r.description||"—")}</div>
+        </div>
+        <button class="btn btn-sm btn-secondary" data-search="${escapeHtml(r.name)}">🔍 Search</button>
+      </div>
+      <div class="tags">
+        <span class="tag">${escapeHtml(r.language)}</span>
+        <span class="tag">★ ${r.stars}</span>
+        <span class="tag">⑂ ${r.forks}</span>
+        <span class="tag">${r.private?"Private":"Public"}</span>
+        <span class="tag ok">✓ Indexed</span>
+      </div>
+    </div>`).join("");
+  el.querySelectorAll("[data-search]").forEach(b => b.onclick = () => { goto("search"); document.getElementById("searchInput").value = b.dataset.search; runSearch(); });
+}
+
+/* ---------- Recompute derived metrics ---------- */
+function recompute(){
+  const n = state.repos.length;
+  state.filesIndexed = n ? Math.round(1200 + n*847 + hash(state.repos[0].name)%400) : 0;
+  state.modulesCount = n * 24;
+  state.dependenciesCount = n * 156;
+  state.memoryIndex = Math.min(100, n*17 + (n?12:0));
+  state.healthScore = n ? Math.min(99, 60 + n*6) : 0;
+  state.constitution = {
+    boundaries: n*4,
+    owners: n*7,
+    risk: Math.max(0, n*2 - 1),
+    dark: Math.max(0, n*3 - 2)
+  };
+  // seed graph if empty and we have repos
+  if(n && !state.graphNodes.length) seedGraph();
+  if(!n){ state.graphNodes=[]; state.graphEdges=[]; }
+}
+
+function seedGraph(){
+  const types = ["core","service","data","external"];
+  const names = ["auth","api-gateway","payments","users","billing","notifications","postgres","redis","stripe-sdk","sendgrid","logger","cache","search-index","admin","webhooks","reports"];
+  const nodes = [];
+  const N = 14;
+  for(let i=0;i<N;i++){
+    const t = types[i%4];
+    nodes.push({
+      id:i, name:names[i%names.length]+(i>=names.length?"-"+i:""),
+      type:t,
+      x: 80 + Math.random()*720, y: 60 + Math.random()*380,
+      vx:0, vy:0,
+      risk: Math.random()<0.2 ? "high" : (Math.random()<0.5?"medium":"low"),
+      connections: 0
+    });
+  }
+  const edges = [];
+  for(let i=0;i<N;i++){
+    const links = 1 + Math.floor(Math.random()*3);
+    for(let k=0;k<links;k++){
+      const j = Math.floor(Math.random()*N);
+      if(j!==i && !edges.find(e=>(e.a===i&&e.b===j)||(e.a===j&&e.b===i))){
+        edges.push({a:i,b:j});
+        nodes[i].connections++; nodes[j].connections++;
+      }
+    }
+  }
+  state.graphNodes = nodes; state.graphEdges = edges;
+}
+
+/* ---------- Graph rendering ---------- */
+let canvas, ctx, selected=null, hoverId=null, drag=null, offset={x:0,y:0};
+function initGraph(){
+  canvas = document.getElementById("graphCanvas");
+  ctx = canvas.getContext("2d");
+  resizeCanvas();
+  window.addEventListener("resize", ()=>{ resizeCanvas(); drawGraph(); });
+  canvas.addEventListener("mousedown", onDown);
+  canvas.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", ()=>{ drag=null; canvas.style.cursor="grab"; });
+  canvas.addEventListener("click", onClick);
+  drawGraph();
+}
+function resizeCanvas(){
+  if(!canvas) return;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = r.width * devicePixelRatio;
+  canvas.height = r.height * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+}
+const COLORS = {core:"#7c5cfc",service:"#3b82f6",data:"#22c55e",external:"#f97316"};
+function drawGraph(){
+  if(!ctx) return;
+  const w = canvas.width/devicePixelRatio, h = canvas.height/devicePixelRatio;
+  ctx.clearRect(0,0,w,h);
+  // background grid
+  ctx.strokeStyle = "rgba(255,255,255,0.03)";
+  for(let x=0;x<w;x+=40){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+  for(let y=0;y<h;y+=40){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+  // edges
+  ctx.strokeStyle = "rgba(160,160,184,0.25)"; ctx.lineWidth = 1;
+  for(const e of state.graphEdges){
+    const a = state.graphNodes[e.a], b = state.graphNodes[e.b];
+    if(!a||!b) continue;
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  // nodes
+  for(const n of state.graphNodes){
+    const r = 14 + Math.min(10, n.connections);
+    if(n.risk==="high"){
+      ctx.beginPath(); ctx.arc(n.x,n.y,r+8,0,Math.PI*2);
+      ctx.fillStyle = "rgba(239,68,68,0.18)"; ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,Math.PI*2);
+    ctx.fillStyle = COLORS[n.type]; ctx.fill();
+    if(selected===n.id){ ctx.lineWidth=3; ctx.strokeStyle="#fff"; ctx.stroke(); }
+    ctx.fillStyle = "#f1f1f7"; ctx.font = "12px Inter"; ctx.textAlign="center";
+    ctx.fillText(n.name, n.x, n.y+r+14);
+    if(n.risk==="high"){ ctx.fillText("⚠️", n.x, n.y+4); }
+  }
+  if(!state.graphNodes.length){
+    ctx.fillStyle = "#5a5a72"; ctx.font = "14px Inter"; ctx.textAlign="center";
+    ctx.fillText("Import a repository to build the graph.", w/2, h/2);
+  }
+}
+function hit(x,y){
+  for(let i=state.graphNodes.length-1;i>=0;i--){
+    const n = state.graphNodes[i];
+    const r = 14 + Math.min(10, n.connections);
+    if((x-n.x)**2 + (y-n.y)**2 <= r*r) return n;
+  }
+  return null;
+}
+function onDown(e){
+  const {x,y} = pos(e); const n = hit(x,y);
+  if(n){ drag={id:n.id,dx:x-n.x,dy:y-n.y}; canvas.style.cursor="grabbing"; }
+}
+function onMove(e){
+  const {x,y} = pos(e);
+  if(drag){
+    const n = state.graphNodes[drag.id]; n.x = x-drag.dx; n.y = y-drag.dy; drawGraph();
+  } else {
+    canvas.style.cursor = hit(x,y) ? "pointer" : "grab";
+  }
+}
+function onClick(e){
+  if(drag) return;
+  const {x,y} = pos(e); const n = hit(x,y);
+  if(n){ selected = n.id; showNode(n); drawGraph(); }
+}
+function pos(e){ const r = canvas.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; }
+function showNode(n){
+  const box = document.getElementById("nodeDetails");
+  const rec = n.risk==="high" ? "⚠️ Wide blast radius. Require design review and staged rollout." :
+             n.risk==="medium" ? "Contained impact. Standard review is sufficient." :
+             "Low risk. Safe for direct changes with tests.";
+  box.innerHTML = `
+    <h4>${escapeHtml(n.name)}</h4>
+    <div class="kv"><span>Type</span><span style="color:${COLORS[n.type]}">${n.type}</span></div>
+    <div class="kv"><span>Risk</span><span>${n.risk}</span></div>
+    <div class="kv"><span>Connections</span><span>${n.connections}</span></div>
+    <div class="rec">${rec}</div>`;
+}
+
+/* ---------- Search ---------- */
+document.getElementById("searchBtn").onclick = runSearch;
+document.getElementById("searchInput").addEventListener("keydown", e=>{ if(e.key==="Enter") runSearch(); });
+document.querySelectorAll(".chip").forEach(c => c.onclick = () => { document.getElementById("searchInput").value = c.dataset.q; runSearch(); });
+function runSearch(){
+  const q = document.getElementById("searchInput").value.trim();
+  const el = document.getElementById("searchResults");
+  if(!q){ el.innerHTML = ""; return; }
+  const base = ["src/auth/session.ts","src/api/routes/index.ts","packages/core/validation.ts","services/billing/handler.py","apps/web/hooks/useUser.ts","infra/db/pool.ts","lib/errors/registry.ts"];
+  const results = Array.from({length:5}).map((_,i)=>({
+    title: q[0].toUpperCase()+q.slice(1)+" — reference "+(i+1),
+    snippet: `Semantic match for "${q}" in module boundary; likely relevant to ${q.split(" ")[0]} concerns.`,
+    path: base[(hash(q)+i)%base.length],
+    score: 98 - i*7 - (hash(q)%5)
+  }));
+  el.innerHTML = results.map(r=>`
+    <div class="sresult">
+      <span class="score">${r.score}%</span>
+      <div class="t">${escapeHtml(r.title)}</div>
+      <div class="s">${escapeHtml(r.snippet)}</div>
+      <div class="p">${escapeHtml(r.path)}</div>
+    </div>`).join("");
+}
+
+/* ---------- Impact ---------- */
+document.getElementById("impactBtn").onclick = runImpact;
+document.getElementById("impactInput").addEventListener("keydown", e=>{ if(e.key==="Enter") runImpact(); });
+function runImpact(){
+  const q = document.getElementById("impactInput").value.trim();
+  const el = document.getElementById("impactResults");
+  if(!q){ el.innerHTML=""; return; }
+  el.innerHTML = `<div style="color:var(--text-secondary)"><span class="spinner"></span> Analyzing blast radius...</div>`;
+  setTimeout(()=>{
+    const risk = 20 + hash(q)%80;
+    const files = 4 + hash(q)%22;
+    const services = 1 + hash(q)%5;
+    const color = risk>70?"#ef4444":risk>40?"#f97316":"#22c55e";
+    const level = risk>70?"crit":risk>40?"med":"low";
+    const rec = risk>70?"Critical — coordinate a change window and require senior review.":
+                risk>40?"Medium — add integration tests and notify service owners.":
+                "Low — proceed with standard PR review.";
+    const impacted = ["src/api/auth.py","src/api/session.py","src/lib/token.py","services/billing/handler.py","apps/web/hooks/useUser.ts","infra/db/pool.ts","lib/errors/registry.ts"].slice(0, files>7?7:files);
+    el.innerHTML = `
+      <div class="k-box"><div class="k">Risk score</div>
+        <div class="v" style="color:${color}">${risk}/100</div>
+        <div class="risk-bar"><div class="risk-fill" style="width:${risk}%;background:${color}"></div></div>
+      </div>
+      <div class="impact-grid">
+        <div class="k-box"><div class="k">Affected files</div><div class="v">${files}</div></div>
+        <div class="k-box"><div class="k">Affected services</div><div class="v">${services}</div></div>
+        <div class="k-box"><div class="k">Target</div><div class="v" style="font-size:14px;font-family:'JetBrains Mono',monospace;word-break:break-all">${escapeHtml(q)}</div></div>
+      </div>
+      <div class="file-list">${impacted.map(f=>`<div>▸ ${escapeHtml(f)}</div>`).join("")}</div>
+      <div class="rec-box ${level}">${rec}</div>`;
+  }, 700);
+}
+
+/* ---------- Agents ---------- */
+const AGENTS = [
+  {id:"architect",ico:"🏗️",name:"Architect Agent",role:"Topology & boundary reasoning across services.",caps:["topology","boundaries","contracts"]},
+  {id:"security",ico:"🔒",name:"Security Agent",role:"SAST, secrets scanning, and supply chain analysis.",caps:["SAST","secrets","supply-chain"]},
+  {id:"debug",ico:"🐛",name:"Debug Agent",role:"Trace correlation and root cause identification.",caps:["traces","logs","RCA"]},
+  {id:"infra",ico:"⚙️",name:"Infra Agent",role:"Platform operations and reliability workflows.",caps:["k8s","CI/CD","observability"]},
+  {id:"onboarding",ico:"🎓",name:"Onboarding Agent",role:"Codebase context for new engineers.",caps:["walkthroughs","glossary","tours"]},
+];
+const activeAgents = new Set();
+function renderAgents(){
+  const el = document.getElementById("agentGrid");
+  el.innerHTML = AGENTS.map(a=>{
+    const active = activeAgents.has(a.id);
+    return `<div class="card agent" data-id="${a.id}">
+      <div class="a-head">
+        <div class="a-ico">${a.ico}</div>
+        <div class="a-name">${a.name}</div>
+        <div class="a-status ${active?"":""}">● Ready</div>
+      </div>
+      <div class="a-role">${a.role}</div>
+      <div class="tags">${a.caps.map(c=>`<span class="tag">${c}</span>`).join("")}</div>
+      <div style="margin-top:12px"><button class="btn btn-sm ${active?"btn-secondary":"btn-primary"}" data-act="${a.id}">${active?"Deactivate":"Activate"}</button></div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-act]").forEach(b=>{
+    b.onclick = ()=>{
+      const id = b.dataset.act;
+      const card = b.closest(".agent");
+      const status = card.querySelector(".a-status");
+      if(activeAgents.has(id)){
+        activeAgents.delete(id); state.activeAgents = activeAgents.size; save(); return;
+      }
+      status.textContent = "● Activating"; status.className = "a-status busy";
+      b.disabled = true; b.innerHTML = `<span class="spinner"></span> Activating`;
+      setTimeout(()=>{
+        activeAgents.add(id); state.activeAgents = activeAgents.size; save();
+      }, 2500);
+    };
+  });
+}
+
+/* ---------- Render ---------- */
+function render(){
+  // stats
+  document.getElementById("stRepos").textContent = state.repos.length;
+  document.getElementById("stFiles").textContent = state.filesIndexed.toLocaleString();
+  document.getElementById("stHealth").textContent = state.healthScore;
+  document.getElementById("stAgents").textContent = state.activeAgents;
+  document.getElementById("mFiles").textContent = state.filesIndexed.toLocaleString();
+  document.getElementById("mMods").textContent = state.modulesCount;
+  document.getElementById("mDeps").textContent = state.dependenciesCount;
+  document.getElementById("mIdx").textContent = state.memoryIndex;
+  document.getElementById("sysMem").textContent = state.memoryIndex + "%";
+  // constitution
+  document.getElementById("cBounds").textContent = state.constitution.boundaries;
+  document.getElementById("cOwners").textContent = state.constitution.owners;
+  document.getElementById("cRisk").textContent = state.constitution.risk;
+  document.getElementById("cDark").textContent = state.constitution.dark;
+  // user
+  if(state.user){
+    userBox.innerHTML = `<img src="${state.user.avatar}" alt=""><div class="who"><div>${escapeHtml(state.user.name||state.user.login)}</div><div class="u">@${escapeHtml(state.user.login)}</div></div>`;
+    authBtn.textContent = "Sign Out"; authBtn.classList.remove("btn-primary"); authBtn.classList.add("btn-secondary");
+  } else {
+    userBox.innerHTML = "";
+    authBtn.textContent = "Sign in with GitHub"; authBtn.classList.add("btn-primary"); authBtn.classList.remove("btn-secondary");
+  }
+  renderRepos();
+  renderAgents();
+  if(canvas) drawGraph();
+}
+
+/* ---------- Utils ---------- */
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function escapeHtml(s){ return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function hash(s){ let h=0; for(let i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; } return Math.abs(h); }
+
+/* ---------- Shortcuts ---------- */
+document.addEventListener("keydown", e=>{
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); goto("search"); document.getElementById("searchInput").focus(); }
+  if(e.key==="Escape" && document.activeElement && document.activeElement.blur) document.activeElement.blur();
+});
+
+/* auto-open app if user was already in */
+if(state.user){ document.getElementById("continueBtn").click(); }
+recompute();
+render();
+</script>
+</body>
+</html>
