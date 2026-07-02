@@ -4,801 +4,872 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Axiom — Engineering Memory Infrastructure</title>
-<meta name="description" content="Axiom is an engineering memory layer that maps codebase relationships, predicts change impact, and preserves institutional knowledge." />
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<meta name="description" content="Axiom analyzes codebases locally in your browser. No login. Knowledge graph, semantic search, impact prediction, and codebase constitution." />
 <style>
-:root{
-  --bg-primary:#0a0a0f;--bg-secondary:#111118;--bg-card:#181822;--bg-input:#1f1f2e;
-  --border-color:#2a2a3e;--text-primary:#f1f1f7;--text-secondary:#a0a0b8;--text-muted:#5a5a72;
-  --accent-purple:#7c5cfc;--accent-blue:#3b82f6;--accent-green:#22c55e;--accent-red:#ef4444;--accent-orange:#f97316;
-}
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
-body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-primary);color:var(--text-primary);line-height:1.6;-webkit-font-smoothing:antialiased}
-code,kbd,pre{font-family:'JetBrains Mono',monospace}
-a{color:inherit;text-decoration:none}
-button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
-::selection{background:var(--accent-purple);color:#fff}
+  :root{
+    --bg:#07080b; --panel:#0d1016; --panel-2:#11151d; --line:#1c2230;
+    --ink:#e6ebf2; --ink-dim:#8892a6; --ink-mute:#5b6478;
+    --accent:#7dd3fc; --accent-2:#a78bfa; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+    --mono: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans: ui-sans-serif,-apple-system,Segoe UI,Inter,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  button{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);padding:6px 10px;border-radius:6px;cursor:pointer;transition:all .15s}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:linear-gradient(180deg,#1e293b,#0f172a);border-color:#334155;color:var(--ink)}
+  button.primary:hover{border-color:var(--accent);box-shadow:0 0 0 1px rgba(125,211,252,.2)}
+  input,textarea,select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);padding:8px 10px;border-radius:6px;outline:none;width:100%}
+  input:focus,textarea:focus{border-color:var(--accent)}
+  .mono{font-family:var(--mono)}
+  .dim{color:var(--ink-dim)}
+  .mute{color:var(--ink-mute)}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;font-size:11px;color:var(--ink-dim)}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--ink-mute)}
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+  .scroll{overflow:auto}
+  .scroll::-webkit-scrollbar{width:8px;height:8px}
+  .scroll::-webkit-scrollbar-thumb{background:#1e2634;border-radius:6px}
 
-/* Welcome */
-.welcome{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(1200px 600px at 50% -10%,rgba(124,92,252,.18),transparent 60%),var(--bg-primary)}
-.welcome-inner{max-width:640px;text-align:center}
-.brand-logo{font-size:56px;filter:drop-shadow(0 0 24px rgba(124,92,252,.6))}
-.brand-name{font-size:56px;font-weight:800;letter-spacing:-.03em;margin-top:8px;background:linear-gradient(180deg,#fff,#c9c4ff);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand-sub{color:var(--text-secondary);margin-top:8px;font-size:16px;letter-spacing:.02em;text-transform:uppercase}
-.brand-mission{color:var(--text-primary);margin-top:28px;font-size:20px;font-weight:500}
-.badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:28px}
-.badge{padding:6px 12px;border:1px solid var(--border-color);border-radius:999px;font-size:12px;color:var(--text-secondary);background:var(--bg-card)}
-.badge.purple{color:#c9c0ff;border-color:rgba(124,92,252,.4)}
-.badge.green{color:#a7f3c1;border-color:rgba(34,197,94,.4)}
-.badge.blue{color:#bcd6ff;border-color:rgba(59,130,246,.4)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:10px;font-weight:600;font-size:14px;transition:transform .06s ease,background .15s ease,border-color .15s ease}
-.btn-primary{background:var(--accent-purple);color:#fff}
-.btn-primary:hover{background:#8f72ff}
-.btn-primary:active{transform:translateY(1px)}
-.btn-secondary{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-color)}
-.btn-secondary:hover{border-color:#3a3a52}
-.btn-sm{padding:8px 12px;font-size:12px;border-radius:8px}
-.welcome .btn{margin-top:32px}
+  /* Layout */
+  #app{display:grid;grid-template-columns:220px 1fr;height:100vh}
+  aside{background:#08090d;border-right:1px solid var(--line);display:flex;flex-direction:column}
+  .brand{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .logo{width:26px;height:26px;border-radius:6px;background:conic-gradient(from 220deg,#7dd3fc,#a78bfa,#7dd3fc);position:relative}
+  .logo::after{content:"";position:absolute;inset:4px;border-radius:4px;background:#08090d}
+  .brand b{font-weight:600;letter-spacing:.3px}
+  nav{padding:8px;flex:1}
+  nav .item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:6px;color:var(--ink-dim);cursor:pointer;font-size:13px}
+  nav .item:hover{background:var(--panel);color:var(--ink)}
+  nav .item.active{background:linear-gradient(90deg,rgba(125,211,252,.08),transparent);color:var(--ink);border-left:2px solid var(--accent);padding-left:8px}
+  nav .kbd{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--ink-mute);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .side-foot{padding:12px;border-top:1px solid var(--line);font-size:11px;color:var(--ink-mute)}
 
-/* App shell */
-.app{display:none;min-height:100vh;grid-template-columns:260px 1fr;background:var(--bg-primary)}
-.app.active{display:grid}
-.sidebar{background:var(--bg-secondary);border-right:1px solid var(--border-color);padding:20px 14px;position:sticky;top:0;height:100vh;overflow-y:auto}
-.side-brand{display:flex;align-items:center;gap:10px;padding:6px 8px 18px}
-.side-brand .logo{font-size:22px}
-.side-brand .name{font-weight:700;letter-spacing:-.01em}
-.side-brand .ver{margin-left:auto;font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace}
-.side-section{margin-top:10px}
-.side-title{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted);padding:8px}
-.nav-item{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;color:var(--text-secondary);font-size:14px;cursor:pointer;user-select:none}
-.nav-item:hover{background:var(--bg-card);color:var(--text-primary)}
-.nav-item.active{background:linear-gradient(90deg,rgba(124,92,252,.18),transparent);color:#fff;border:1px solid rgba(124,92,252,.35)}
-.nav-item .ico{width:20px;text-align:center}
-.side-system{margin-top:16px;background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;padding:12px}
-.side-system .row{display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary);padding:4px 0}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--accent-green);display:inline-block;box-shadow:0 0 8px var(--accent-green);margin-right:6px}
+  main{display:flex;flex-direction:column;min-width:0}
+  header.top{height:44px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 16px;gap:12px;background:#0a0c11}
+  header.top .crumbs{color:var(--ink-dim);font-size:12px}
+  header.top .spacer{flex:1}
+  .view{flex:1;overflow:auto;position:relative}
 
-/* Main */
-.main{min-width:0;display:flex;flex-direction:column}
-.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--border-color);background:rgba(10,10,15,.8);backdrop-filter:blur(10px)}
-.hamburger{display:none}
-.topbar .title{font-weight:700;letter-spacing:-.01em}
-.topbar .spacer{flex:1}
-.user{display:flex;align-items:center;gap:10px}
-.user img{width:28px;height:28px;border-radius:50%;border:1px solid var(--border-color)}
-.user .who{font-size:13px}
-.user .who .u{color:var(--text-muted);font-size:11px}
-.content{padding:24px;max-width:1400px;width:100%;margin:0 auto}
-.page{display:none}
-.page.active{display:block;animation:fade .18s ease}
-@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  /* Welcome */
+  .welcome{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;text-align:center;background:
+    radial-gradient(1000px 500px at 50% -100px,rgba(125,211,252,.08),transparent),
+    radial-gradient(800px 400px at 50% 120%,rgba(167,139,250,.06),transparent)}
+  .welcome h1{font-size:44px;margin:0 0 8px;font-weight:600;letter-spacing:-.5px;background:linear-gradient(180deg,#fff,#94a3b8);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .welcome p.tag{color:var(--ink-dim);max-width:560px;margin:0 0 32px;font-size:15px;line-height:1.5}
+  .drop{width:min(720px,92%);border:1.5px dashed #24304a;border-radius:12px;padding:36px;background:linear-gradient(180deg,rgba(125,211,252,.03),transparent);transition:all .2s}
+  .drop.hover{border-color:var(--accent);background:rgba(125,211,252,.06)}
+  .drop h3{margin:0 0 8px;font-weight:500}
+  .drop .row{display:flex;gap:8px;margin-top:16px}
+  .drop .row input{flex:1}
+  .langs{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:22px;max-width:640px}
+  .langs .chip{background:var(--panel)}
+  .feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:36px;width:min(900px,92%)}
+  .feat{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:14px;text-align:left}
+  .feat .n{font-size:11px;color:var(--ink-mute);font-family:var(--mono)}
+  .feat h4{margin:6px 0 4px;font-weight:500}
+  .feat p{margin:0;color:var(--ink-dim);font-size:12px;line-height:1.5}
 
-h1.page-title{font-size:26px;font-weight:700;letter-spacing:-.02em}
-p.page-sub{color:var(--text-secondary);margin-top:4px;font-size:14px}
-.section-head{display:flex;align-items:end;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap}
+  /* Dashboard */
+  .grid{padding:16px;display:grid;gap:14px}
+  .g-cards{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .card h5{margin:0 0 4px;font-size:11px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:.8px;font-weight:500}
+  .card .v{font-size:24px;font-weight:600}
+  .card .sub{font-size:11px;color:var(--ink-dim);margin-top:2px}
+  .card.big{padding:0;overflow:hidden;display:flex;flex-direction:column}
+  .card-h{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .card-h h4{margin:0;font-size:13px;font-weight:500}
+  .card-b{padding:12px 14px}
 
-/* Cards */
-.card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:18px}
-.grid{display:grid;gap:14px}
-.grid-4{grid-template-columns:repeat(4,1fr)}
-.grid-3{grid-template-columns:repeat(3,1fr)}
-.grid-2{grid-template-columns:repeat(2,1fr)}
-@media(max-width:1000px){.grid-4{grid-template-columns:repeat(2,1fr)}.grid-3{grid-template-columns:1fr}.grid-2{grid-template-columns:1fr}}
-@media(max-width:640px){
-  .app{grid-template-columns:1fr}
-  .sidebar{position:fixed;left:-280px;width:260px;z-index:20;transition:left .2s ease}
-  .sidebar.open{left:0}
-  .hamburger{display:inline-flex}
-  .grid-4{grid-template-columns:1fr}
-}
+  /* Graph */
+  #graph{width:100%;height:100%;display:block}
+  .graph-wrap{position:relative;height:100%;background:radial-gradient(600px 400px at 30% 30%,rgba(125,211,252,.05),transparent)}
+  .graph-legend{position:absolute;bottom:12px;left:12px;background:rgba(13,16,22,.9);border:1px solid var(--line);padding:8px 10px;border-radius:8px;font-size:11px;display:flex;gap:12px}
+  .graph-legend span{display:flex;align-items:center;gap:5px}
+  .lg-dot{width:8px;height:8px;border-radius:50%}
+  .node-info{position:absolute;top:12px;right:12px;width:280px;background:rgba(13,16,22,.95);border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px}
 
-.stat{position:relative;overflow:hidden}
-.stat .label{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-muted)}
-.stat .value{font-size:32px;font-weight:700;letter-spacing:-.02em;margin-top:6px}
-.stat .foot{font-size:12px;color:var(--text-secondary);margin-top:6px}
-.stat.p .value{color:#c9c0ff}
-.stat.b .value{color:#bcd6ff}
-.stat.g .value{color:#a7f3c1}
-.stat.o .value{color:#ffd0a8}
-.stat::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent-purple)}
-.stat.b::before{background:var(--accent-blue)}
-.stat.g::before{background:var(--accent-green)}
-.stat.o::before{background:var(--accent-orange)}
+  /* Files/list */
+  .file-list{font-family:var(--mono);font-size:12px}
+  .file-list .fi{padding:6px 10px;display:flex;gap:10px;align-items:center;border-bottom:1px solid rgba(255,255,255,.03);cursor:pointer}
+  .file-list .fi:hover{background:var(--panel-2)}
+  .file-list .fi .path{flex:1;color:var(--ink-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .file-list .fi .risk{font-size:11px;padding:1px 6px;border-radius:4px}
+  .risk.ok{background:rgba(74,222,128,.15);color:var(--ok)}
+  .risk.warn{background:rgba(251,191,36,.15);color:var(--warn)}
+  .risk.bad{background:rgba(248,113,113,.15);color:var(--bad)}
 
-/* Memory card */
-.memory{background:linear-gradient(135deg,rgba(124,92,252,.14),rgba(59,130,246,.08));border:1px solid rgba(124,92,252,.3)}
-.memory h3{font-size:18px}
-.memory .mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:14px}
-.memory .m{background:rgba(0,0,0,.25);border:1px solid var(--border-color);border-radius:10px;padding:12px}
-.memory .m .k{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em}
-.memory .m .v{font-size:22px;font-weight:700;margin-top:4px}
-@media(max-width:900px){.memory .mrow{grid-template-columns:repeat(2,1fr)}}
+  /* Search */
+  .search-box{padding:16px;border-bottom:1px solid var(--line)}
+  .search-box input{font-size:15px;padding:12px 14px}
+  .results{padding:8px 16px}
+  .result{padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:var(--panel);cursor:pointer}
+  .result:hover{border-color:var(--accent)}
+  .result .p{font-family:var(--mono);font-size:12px;color:var(--accent)}
+  .result .snip{color:var(--ink-dim);font-size:12px;margin-top:6px;font-family:var(--mono);white-space:pre-wrap;max-height:80px;overflow:hidden}
+  .result .score{float:right;font-size:11px;color:var(--ink-mute)}
 
-/* Quick actions */
-.qa{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-@media(max-width:1000px){.qa{grid-template-columns:repeat(2,1fr)}}
-.qa button{padding:16px;border:1px solid var(--border-color);border-radius:12px;background:var(--bg-card);color:var(--text-primary);text-align:left;transition:all .15s ease}
-.qa button:hover{border-color:rgba(124,92,252,.5);transform:translateY(-1px)}
-.qa .ico{font-size:22px}
-.qa .name{margin-top:8px;font-weight:600}
-.qa .sub{font-size:12px;color:var(--text-secondary)}
+  /* Agents */
+  .agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;padding:16px}
+  .agent{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:16px}
+  .agent .h{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .agent .ic{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;font-size:16px;background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid var(--line)}
+  .agent h4{margin:0;font-weight:500}
+  .agent p{color:var(--ink-dim);font-size:12px;margin:0 0 10px;line-height:1.5}
+  .agent .status{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--ink-mute)}
 
-/* Inputs */
-.input,select,textarea{width:100%;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-color);border-radius:10px;padding:11px 12px;font-size:14px;outline:none;transition:border-color .15s ease,box-shadow .15s ease;font-family:inherit}
-.input:focus{border-color:var(--accent-purple);box-shadow:0 0 0 3px rgba(124,92,252,.2)}
-.row-inline{display:flex;gap:10px}
-.row-inline .input{flex:1}
+  /* Constitution */
+  .cons{padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .cons .card ul{margin:6px 0 0;padding:0;list-style:none}
+  .cons .card li{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04);font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;gap:8px}
+  .cons .card li:last-child{border:none}
+  .cons .card li .k{color:var(--ink)}
+  .cons .card li .v{color:var(--ink-dim)}
 
-/* Graph */
-.graph-wrap{position:relative;background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;overflow:hidden}
-#graphCanvas{display:block;width:100%;height:520px;cursor:grab}
-.graph-overlay{position:absolute;bottom:10px;left:12px;font-size:12px;color:var(--text-muted);background:rgba(0,0,0,.5);padding:6px 10px;border-radius:8px}
-.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}
-.legend .lg{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)}
-.legend .sw{width:12px;height:12px;border-radius:50%}
-.node-details h4{font-size:16px}
-.node-details .kv{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed var(--border-color);font-size:13px}
-.node-details .kv:last-child{border:none}
-.rec{margin-top:10px;padding:10px;border-radius:10px;background:var(--bg-input);border:1px solid var(--border-color);font-size:13px;color:var(--text-secondary)}
+  /* Empty */
+  .empty{padding:60px 20px;text-align:center;color:var(--ink-dim)}
+  .empty h3{color:var(--ink);font-weight:500;margin:0 0 6px}
 
-/* Repo list */
-.repo{padding:14px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-card);margin-bottom:10px}
-.repo .r-top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.repo .r-name{font-weight:700}
-.repo .r-desc{color:var(--text-secondary);font-size:13px;margin-top:4px}
-.tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
-.tag{font-size:11px;padding:3px 8px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-color);color:var(--text-secondary)}
-.tag.ok{color:#a7f3c1;border-color:rgba(34,197,94,.35)}
-.status{margin-top:10px;font-size:13px;color:var(--text-secondary)}
-.status.err{color:#ffb4b4}
-.status.ok{color:#a7f3c1}
+  /* Progress */
+  .progress{position:fixed;top:44px;left:220px;right:0;height:2px;background:transparent;z-index:100}
+  .progress .b{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));transition:width .2s}
 
-/* Search results */
-.sresult{padding:14px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-card);margin-bottom:10px}
-.sresult .t{font-weight:600}
-.sresult .p{font-size:12px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;margin-top:4px}
-.sresult .s{font-size:13px;color:var(--text-secondary);margin-top:6px}
-.sresult .score{float:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:#c9c0ff}
-.suggests{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 16px}
-.chip{padding:6px 10px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-color);font-size:12px;color:var(--text-secondary);cursor:pointer}
-.chip:hover{border-color:rgba(124,92,252,.5);color:#fff}
+  /* Modal */
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:200}
+  .modal-bg.open{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;width:min(500px,90%);max-height:80vh;overflow:auto}
+  .modal h3{margin:0 0 12px;font-weight:500}
+  .modal pre{background:#000;padding:12px;border-radius:6px;font-size:11px;overflow:auto;max-height:300px;color:var(--ink-dim)}
 
-/* Impact */
-.risk-bar{height:10px;background:var(--bg-input);border-radius:999px;overflow:hidden;margin-top:8px}
-.risk-fill{height:100%;transition:width .6s ease}
-.impact-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
-@media(max-width:800px){.impact-grid{grid-template-columns:1fr}}
-.k-box{background:var(--bg-input);border:1px solid var(--border-color);border-radius:10px;padding:12px}
-.k-box .k{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--text-muted)}
-.k-box .v{font-size:22px;font-weight:700;margin-top:4px}
-.file-list{margin-top:14px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:10px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:13px}
-.file-list div{padding:6px 8px;border-radius:6px}
-.file-list div:hover{background:rgba(255,255,255,.03)}
-.rec-box{margin-top:14px;padding:14px;border-radius:10px}
-.rec-box.crit{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);color:#ffb4b4}
-.rec-box.med{background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.35);color:#ffd0a8}
-.rec-box.low{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.35);color:#a7f3c1}
-
-/* Agents */
-.agent{padding:16px}
-.agent .a-head{display:flex;align-items:center;gap:10px}
-.agent .a-ico{font-size:22px}
-.agent .a-name{font-weight:700}
-.agent .a-status{margin-left:auto;font-size:12px;color:var(--accent-green)}
-.agent .a-status.busy{color:var(--accent-orange)}
-.agent .a-role{color:var(--text-secondary);font-size:13px;margin-top:6px;min-height:38px}
-.spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.15);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin 1s linear infinite;vertical-align:middle}
-@keyframes spin{to{transform:rotate(360deg)}}
-
-.kbd{font-family:'JetBrains Mono',monospace;font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-input);border:1px solid var(--border-color);color:var(--text-secondary)}
-.notice{margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);color:#bcd6ff;font-size:13px}
+  @media (max-width:800px){
+    #app{grid-template-columns:56px 1fr}
+    .brand b,nav .item span.lbl,nav .kbd,.side-foot{display:none}
+  }
 </style>
 </head>
 <body>
-
-<!-- WELCOME -->
-<section id="welcome" class="welcome">
-  <div class="welcome-inner">
-    <div class="brand-logo">⚡</div>
-    <div class="brand-name">Axiom</div>
-    <div class="brand-sub">Engineering Memory Infrastructure</div>
-    <p class="brand-mission">Most tools optimize writing code. Axiom optimizes understanding codebases.</p>
-    <div class="badges">
-      <span class="badge green">Production Ready</span>
-      <span class="badge blue">Enterprise Grade</span>
-      <span class="badge purple">v2.0.0</span>
-    </div>
-    <button class="btn btn-primary" id="continueBtn">Continue →</button>
-  </div>
-</section>
-
-<!-- APP -->
-<div class="app" id="app">
-  <aside class="sidebar" id="sidebar">
-    <div class="side-brand"><div class="logo">⚡</div><div class="name">Axiom</div><div class="ver">v2.0.0</div></div>
-    <div class="side-section">
-      <div class="side-title">Navigation</div>
-      <div class="nav-item active" data-page="dashboard"><span class="ico">📊</span> Dashboard</div>
-      <div class="nav-item" data-page="graph"><span class="ico">🕸️</span> Knowledge Graph</div>
-      <div class="nav-item" data-page="repos"><span class="ico">📁</span> Repositories</div>
-      <div class="nav-item" data-page="search"><span class="ico">🔍</span> Semantic Search</div>
-      <div class="nav-item" data-page="impact"><span class="ico">💥</span> Impact Prediction</div>
-      <div class="nav-item" data-page="constitution"><span class="ico">📜</span> Constitution</div>
-      <div class="nav-item" data-page="agents"><span class="ico">🤖</span> Agents</div>
-    </div>
-    <div class="side-section">
-      <div class="side-title">System</div>
-      <div class="side-system">
-        <div class="row"><span><span class="dot"></span>Status</span><span>Operational</span></div>
-        <div class="row"><span>Memory Index</span><span id="sysMem">0%</span></div>
-      </div>
+<div id="app">
+  <aside>
+    <div class="brand"><div class="logo"></div><b>Axiom</b></div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <div>Standalone · No login</div>
+      <div class="mute" style="margin-top:4px">All processing local</div>
     </div>
   </aside>
-
-  <main class="main">
-    <div class="topbar">
-      <button class="btn btn-sm btn-secondary hamburger" id="hamburger">☰</button>
-      <div class="title" id="pageTitle">Dashboard</div>
+  <main>
+    <header class="top">
+      <div class="crumbs" id="crumbs">Welcome</div>
       <div class="spacer"></div>
-      <div class="user" id="userBox"></div>
-      <button class="btn btn-sm btn-primary" id="authBtn">Sign in with GitHub</button>
-    </div>
-
-    <div class="content">
-      <!-- DASHBOARD -->
-      <section class="page active" data-page="dashboard">
-        <div class="section-head">
-          <div>
-            <h1 class="page-title">Engineering Memory Overview</h1>
-            <p class="page-sub">Live view of your organization's codebase intelligence.</p>
-          </div>
-        </div>
-
-        <div class="grid grid-4">
-          <div class="card stat p"><div class="label">Repositories</div><div class="value" id="stRepos">0</div><div class="foot">Indexed sources</div></div>
-          <div class="card stat b"><div class="label">Files Indexed</div><div class="value" id="stFiles">0</div><div class="foot">Across all repos</div></div>
-          <div class="card stat g"><div class="label">Health Score</div><div class="value"><span id="stHealth">0</span>%</div><div class="foot">Codebase health</div></div>
-          <div class="card stat o"><div class="label">Agents Active</div><div class="value"><span id="stAgents">0</span>/5</div><div class="foot">Specialist agents</div></div>
-        </div>
-
-        <div class="card memory" style="margin-top:14px">
-          <h3>Engineering Memory</h3>
-          <p style="color:var(--text-secondary);font-size:13px;margin-top:4px">Most tools optimize writing code. Axiom optimizes understanding codebases.</p>
-          <div class="mrow">
-            <div class="m"><div class="k">Files</div><div class="v" id="mFiles">0</div></div>
-            <div class="m"><div class="k">Modules</div><div class="v" id="mMods">0</div></div>
-            <div class="m"><div class="k">Dependencies</div><div class="v" id="mDeps">0</div></div>
-            <div class="m"><div class="k">Memory Index</div><div class="v"><span id="mIdx">0</span>%</div></div>
-          </div>
-        </div>
-
-        <div style="margin-top:22px">
-          <div class="section-head"><h3 style="font-size:16px">Quick Actions</h3></div>
-          <div class="qa">
-            <button data-goto="graph"><div class="ico">🕸️</div><div class="name">View Graph</div><div class="sub">Explore topology</div></button>
-            <button data-goto="repos"><div class="ico">📁</div><div class="name">Import Repository</div><div class="sub">Add a source</div></button>
-            <button data-goto="search"><div class="ico">🔍</div><div class="name">Semantic Search</div><div class="sub">Ask your codebase</div></button>
-            <button data-goto="impact"><div class="ico">💥</div><div class="name">Impact Prediction</div><div class="sub">Blast radius</div></button>
-            <button data-goto="agents"><div class="ico">🤖</div><div class="name">Activate Agents</div><div class="sub">Specialist AI</div></button>
-          </div>
-        </div>
-      </section>
-
-      <!-- GRAPH -->
-      <section class="page" data-page="graph">
-        <div class="section-head">
-          <div><h1 class="page-title">Knowledge Graph</h1><p class="page-sub">Interactive topology of modules, services, and dependencies.</p></div>
-        </div>
-        <div class="grid grid-2" style="grid-template-columns:2fr 1fr">
-          <div>
-            <div class="graph-wrap">
-              <canvas id="graphCanvas"></canvas>
-              <div class="graph-overlay">🖱️ Click nodes to explore · 🔄 Drag to navigate</div>
-            </div>
-            <div class="legend">
-              <div class="lg"><span class="sw" style="background:#7c5cfc"></span>Core Modules</div>
-              <div class="lg"><span class="sw" style="background:#3b82f6"></span>Services</div>
-              <div class="lg"><span class="sw" style="background:#22c55e"></span>Data Layer</div>
-              <div class="lg"><span class="sw" style="background:#f97316"></span>External Deps</div>
-              <div class="lg"><span class="sw" style="background:#ef4444"></span>High Risk ⚠️</div>
-            </div>
-          </div>
-          <div class="card node-details" id="nodeDetails">
-            <h4>Node Details</h4>
-            <p style="color:var(--text-secondary);font-size:13px;margin-top:6px">Click any node to inspect it.</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- REPOS -->
-      <section class="page" data-page="repos">
-        <div class="section-head">
-          <div><h1 class="page-title">Repositories</h1><p class="page-sub">Import repositories to build institutional memory.</p></div>
-        </div>
-        <div class="card">
-          <div class="row-inline">
-            <input class="input" id="repoUrl" placeholder="https://github.com/owner/repo" />
-            <button class="btn btn-primary" id="importBtn">Import</button>
-          </div>
-          <div class="status" id="importStatus"></div>
-        </div>
-        <div style="margin-top:14px" id="repoList"></div>
-      </section>
-
-      <!-- SEARCH -->
-      <section class="page" data-page="search">
-        <div class="section-head">
-          <div><h1 class="page-title">Semantic Search</h1><p class="page-sub">Ask questions across your indexed codebase. <span class="kbd">Ctrl</span> <span class="kbd">K</span></p></div>
-        </div>
-        <div class="card">
-          <div class="row-inline">
-            <input class="input" id="searchInput" placeholder="🔎 e.g. how does authentication work?" />
-            <button class="btn btn-primary" id="searchBtn">Search</button>
-          </div>
-          <div class="suggests">
-            <span class="chip" data-q="authentication flow">authentication flow</span>
-            <span class="chip" data-q="payment validation">payment validation</span>
-            <span class="chip" data-q="error handling pattern">error handling pattern</span>
-            <span class="chip" data-q="database connection">database connection</span>
-          </div>
-        </div>
-        <div id="searchResults" style="margin-top:14px"></div>
-      </section>
-
-      <!-- IMPACT -->
-      <section class="page" data-page="impact">
-        <div class="section-head">
-          <div><h1 class="page-title">Impact Prediction</h1><p class="page-sub">Predict blast radius before you commit.</p></div>
-        </div>
-        <div class="card">
-          <div class="row-inline">
-            <input class="input" id="impactInput" placeholder="Enter file path or function name (e.g., src/api/auth.py)" />
-            <button class="btn btn-primary" id="impactBtn">Analyze</button>
-          </div>
-          <div id="impactResults" style="margin-top:14px"></div>
-        </div>
-      </section>
-
-      <!-- CONSTITUTION -->
-      <section class="page" data-page="constitution">
-        <div class="section-head">
-          <div><h1 class="page-title">Codebase Constitution</h1><p class="page-sub">Living rules: ownership, boundaries, and risk.</p></div>
-        </div>
-        <div class="grid grid-4">
-          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Service Boundaries</div><div style="font-size:26px;font-weight:700;margin-top:6px"><span id="cBounds">0</span> identified</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Cross-service contracts.</div></div>
-          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Ownership Map</div><div style="font-size:26px;font-weight:700;margin-top:6px"><span id="cOwners">0</span> owners mapped</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Teams and maintainers.</div></div>
-          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Blast Radius Index</div><div style="font-size:26px;font-weight:700;margin-top:6px;color:#ffb4b4"><span id="cRisk">0</span> high-risk modules</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Modules with wide impact.</div></div>
-          <div class="card"><div class="label" style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.12em">Dark Matter Modules</div><div style="font-size:26px;font-weight:700;margin-top:6px;color:#ffd0a8"><span id="cDark">0</span> unowned modules</div><div style="color:var(--text-secondary);font-size:13px;margin-top:4px">Unassigned or orphaned.</div></div>
-        </div>
-      </section>
-
-      <!-- AGENTS -->
-      <section class="page" data-page="agents">
-        <div class="section-head">
-          <div><h1 class="page-title">Agent Roster</h1><p class="page-sub">Domain specialists on-call for your codebase.</p></div>
-        </div>
-        <div class="grid grid-3" id="agentGrid"></div>
-      </section>
-    </div>
+      <div class="chip" id="repoChip" style="display:none"><span class="dot ok"></span><span id="repoName">—</span></div>
+      <button id="btnReset" style="display:none">Reset</button>
+    </header>
+    <div class="progress" id="prog" style="display:none"><div class="b" id="progB" style="width:0%"></div></div>
+    <div class="view" id="view"></div>
   </main>
 </div>
 
+<div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
+
 <script>
-/* ---------- Config ---------- */
-const OAUTH = {
-  clientId: "Ov23liyZ0DVT21nm9MWs",
-  redirectUri: location.origin + location.pathname,
-  scope: "repo user"
-};
-const STORAGE_KEY = "axiom_state";
-
-/* ---------- State ---------- */
-const defaultState = {
-  user: null,
-  repos: [],
-  filesIndexed: 0,
-  modulesCount: 0,
-  dependenciesCount: 0,
-  healthScore: 0,
-  memoryIndex: 0,
-  activeAgents: 0,
-  graphNodes: [], graphEdges: [],
-  constitution: { boundaries:0, owners:0, risk:0, dark:0 }
-};
-let state = load();
-
-function load(){
-  try { return Object.assign({}, defaultState, JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")); }
-  catch { return {...defaultState}; }
-}
-function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); render(); }
-
-/* ---------- Nav ---------- */
-document.getElementById("continueBtn").onclick = () => {
-  document.getElementById("welcome").style.display = "none";
-  document.getElementById("app").classList.add("active");
-  render();
-  initGraph();
-};
-document.querySelectorAll(".nav-item").forEach(el => {
-  el.onclick = () => goto(el.dataset.page);
-});
-document.querySelectorAll("[data-goto]").forEach(el => el.onclick = () => goto(el.dataset.goto));
-function goto(page){
-  document.querySelectorAll(".nav-item").forEach(n=>n.classList.toggle("active", n.dataset.page===page));
-  document.querySelectorAll(".page").forEach(p=>p.classList.toggle("active", p.dataset.page===page));
-  const titles = {dashboard:"Dashboard",graph:"Knowledge Graph",repos:"Repositories",search:"Semantic Search",impact:"Impact Prediction",constitution:"Constitution",agents:"Agents"};
-  document.getElementById("pageTitle").textContent = titles[page] || "Axiom";
-  document.getElementById("sidebar").classList.remove("open");
-  if(page==="graph") drawGraph();
-}
-document.getElementById("hamburger").onclick = () => document.getElementById("sidebar").classList.toggle("open");
-
-/* ---------- Auth ---------- */
-const authBtn = document.getElementById("authBtn");
-const userBox = document.getElementById("userBox");
-authBtn.onclick = () => {
-  if(state.user){ state.user = null; state.repos = []; recompute(); save(); return; }
-  // Start OAuth authorize redirect. Token exchange requires a small server-side proxy
-  // (the client secret must never live in this bundle). See notice on the Repositories page.
-  const url = `https://github.com/login/oauth/authorize?client_id=${OAUTH.clientId}&redirect_uri=${encodeURIComponent(OAUTH.redirectUri)}&scope=${encodeURIComponent(OAUTH.scope)}`;
-  window.location.href = url;
+/* ============ Axiom Standalone ============ */
+const LS = "axiom.repo.v2";
+const state = {
+  route: "welcome",
+  repo: null, // {name, files:[{path,size,content,lang,module,risk,tokens}], modules:{}, edges:[], health, stats}
+  agents: [
+    {id:"architect", icon:"⚙", name:"Architect", desc:"Maps service boundaries, module cohesion, and layering violations.", on:false},
+    {id:"security",  icon:"🛡", name:"Security",  desc:"Surfaces auth, secrets, input-validation, and cryptography touchpoints.", on:false},
+    {id:"debug",     icon:"🐞", name:"Debug",     desc:"Traces error-handling gaps and paths likely to fail under load.", on:false},
+    {id:"infra",     icon:"☁", name:"Infra",     desc:"Reads config, Dockerfiles, CI pipelines and deployment topology.", on:false},
+    {id:"onboard",   icon:"📘", name:"Onboarding",desc:"Generates a new-engineer tour of the highest-leverage modules.", on:false},
+  ],
+  progress:0,
+  q:""
 };
 
-/* Handle callback (?code=...). Without a proxy we simulate a session so the demo works. */
-(async function handleOAuthCallback(){
-  const p = new URLSearchParams(location.search);
-  const code = p.get("code");
-  if(!code) return;
-  history.replaceState({}, "", location.pathname);
-  // Simulated user; replace with real /token exchange via a serverless proxy.
-  state.user = { login:"engineer", name:"GitHub Engineer", avatar:"https://avatars.githubusercontent.com/u/9919?s=64" };
-  save();
-})();
-
-/* ---------- Repos ---------- */
-document.getElementById("importBtn").onclick = importRepo;
-document.getElementById("repoUrl").addEventListener("keydown", e => { if(e.key==="Enter") importRepo(); });
-async function importRepo(){
-  const url = document.getElementById("repoUrl").value.trim();
-  const status = document.getElementById("importStatus");
-  status.className = "status"; status.textContent = "";
-  const m = url.match(/github\.com\/([^\/\s]+)\/([^\/\s#?]+)/i);
-  if(!m){ status.className="status err"; status.textContent="Enter a valid GitHub URL."; return; }
-  const owner = m[1], repo = m[2].replace(/\.git$/,"");
-  status.textContent = "⏳ Cloning...";
-  await sleep(500);
-  status.textContent = "🧠 Parsing files...";
-  let meta = { name:`${owner}/${repo}`, description:"Repository imported into Axiom.", language:"—", stars:0, forks:0, private:false, url };
-  try{
-    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
-    if(r.ok){ const d = await r.json(); meta = { name:d.full_name, description:d.description||"—", language:d.language||"—", stars:d.stargazers_count, forks:d.forks_count, private:d.private, url:d.html_url }; }
-  }catch{}
-  await sleep(500);
-  status.textContent = "📚 Indexing...";
-  await sleep(600);
-  if(state.repos.find(r=>r.name===meta.name)){ status.className="status err"; status.textContent="Already imported."; return; }
-  state.repos.push(meta);
-  recompute();
-  save();
-  status.className="status ok"; status.textContent = `✓ Indexed ${meta.name}`;
-  document.getElementById("repoUrl").value = "";
-}
-
-function renderRepos(){
-  const el = document.getElementById("repoList");
-  if(!state.repos.length){
-    el.innerHTML = `<div class="card" style="color:var(--text-secondary)">No repositories yet. Try <code>https://github.com/facebook/react</code>.<div class="notice">Note: GitHub OAuth authorize is wired, but token exchange needs a small server-side proxy (the client secret cannot be safe in a public SPA). You can still import public repos here.</div></div>`;
-    return;
-  }
-  el.innerHTML = state.repos.map(r => `
-    <div class="repo">
-      <div class="r-top">
-        <div>
-          <a class="r-name" href="${r.url}" target="_blank" rel="noreferrer">${escapeHtml(r.name)}</a>
-          <div class="r-desc">${escapeHtml(r.description||"—")}</div>
-        </div>
-        <button class="btn btn-sm btn-secondary" data-search="${escapeHtml(r.name)}">🔍 Search</button>
-      </div>
-      <div class="tags">
-        <span class="tag">${escapeHtml(r.language)}</span>
-        <span class="tag">★ ${r.stars}</span>
-        <span class="tag">⑂ ${r.forks}</span>
-        <span class="tag">${r.private?"Private":"Public"}</span>
-        <span class="tag ok">✓ Indexed</span>
-      </div>
-    </div>`).join("");
-  el.querySelectorAll("[data-search]").forEach(b => b.onclick = () => { goto("search"); document.getElementById("searchInput").value = b.dataset.search; runSearch(); });
-}
-
-/* ---------- Recompute derived metrics ---------- */
-function recompute(){
-  const n = state.repos.length;
-  state.filesIndexed = n ? Math.round(1200 + n*847 + hash(state.repos[0].name)%400) : 0;
-  state.modulesCount = n * 24;
-  state.dependenciesCount = n * 156;
-  state.memoryIndex = Math.min(100, n*17 + (n?12:0));
-  state.healthScore = n ? Math.min(99, 60 + n*6) : 0;
-  state.constitution = {
-    boundaries: n*4,
-    owners: n*7,
-    risk: Math.max(0, n*2 - 1),
-    dark: Math.max(0, n*3 - 2)
-  };
-  // seed graph if empty and we have repos
-  if(n && !state.graphNodes.length) seedGraph();
-  if(!n){ state.graphNodes=[]; state.graphEdges=[]; }
-}
-
-function seedGraph(){
-  const types = ["core","service","data","external"];
-  const names = ["auth","api-gateway","payments","users","billing","notifications","postgres","redis","stripe-sdk","sendgrid","logger","cache","search-index","admin","webhooks","reports"];
-  const nodes = [];
-  const N = 14;
-  for(let i=0;i<N;i++){
-    const t = types[i%4];
-    nodes.push({
-      id:i, name:names[i%names.length]+(i>=names.length?"-"+i:""),
-      type:t,
-      x: 80 + Math.random()*720, y: 60 + Math.random()*380,
-      vx:0, vy:0,
-      risk: Math.random()<0.2 ? "high" : (Math.random()<0.5?"medium":"low"),
-      connections: 0
-    });
-  }
-  const edges = [];
-  for(let i=0;i<N;i++){
-    const links = 1 + Math.floor(Math.random()*3);
-    for(let k=0;k<links;k++){
-      const j = Math.floor(Math.random()*N);
-      if(j!==i && !edges.find(e=>(e.a===i&&e.b===j)||(e.a===j&&e.b===i))){
-        edges.push({a:i,b:j});
-        nodes[i].connections++; nodes[j].connections++;
-      }
-    }
-  }
-  state.graphNodes = nodes; state.graphEdges = edges;
-}
-
-/* ---------- Graph rendering ---------- */
-let canvas, ctx, selected=null, hoverId=null, drag=null, offset={x:0,y:0};
-function initGraph(){
-  canvas = document.getElementById("graphCanvas");
-  ctx = canvas.getContext("2d");
-  resizeCanvas();
-  window.addEventListener("resize", ()=>{ resizeCanvas(); drawGraph(); });
-  canvas.addEventListener("mousedown", onDown);
-  canvas.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", ()=>{ drag=null; canvas.style.cursor="grab"; });
-  canvas.addEventListener("click", onClick);
-  drawGraph();
-}
-function resizeCanvas(){
-  if(!canvas) return;
-  const r = canvas.getBoundingClientRect();
-  canvas.width = r.width * devicePixelRatio;
-  canvas.height = r.height * devicePixelRatio;
-  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
-}
-const COLORS = {core:"#7c5cfc",service:"#3b82f6",data:"#22c55e",external:"#f97316"};
-function drawGraph(){
-  if(!ctx) return;
-  const w = canvas.width/devicePixelRatio, h = canvas.height/devicePixelRatio;
-  ctx.clearRect(0,0,w,h);
-  // background grid
-  ctx.strokeStyle = "rgba(255,255,255,0.03)";
-  for(let x=0;x<w;x+=40){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
-  for(let y=0;y<h;y+=40){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
-  // edges
-  ctx.strokeStyle = "rgba(160,160,184,0.25)"; ctx.lineWidth = 1;
-  for(const e of state.graphEdges){
-    const a = state.graphNodes[e.a], b = state.graphNodes[e.b];
-    if(!a||!b) continue;
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-  }
-  // nodes
-  for(const n of state.graphNodes){
-    const r = 14 + Math.min(10, n.connections);
-    if(n.risk==="high"){
-      ctx.beginPath(); ctx.arc(n.x,n.y,r+8,0,Math.PI*2);
-      ctx.fillStyle = "rgba(239,68,68,0.18)"; ctx.fill();
-    }
-    ctx.beginPath(); ctx.arc(n.x,n.y,r,0,Math.PI*2);
-    ctx.fillStyle = COLORS[n.type]; ctx.fill();
-    if(selected===n.id){ ctx.lineWidth=3; ctx.strokeStyle="#fff"; ctx.stroke(); }
-    ctx.fillStyle = "#f1f1f7"; ctx.font = "12px Inter"; ctx.textAlign="center";
-    ctx.fillText(n.name, n.x, n.y+r+14);
-    if(n.risk==="high"){ ctx.fillText("⚠️", n.x, n.y+4); }
-  }
-  if(!state.graphNodes.length){
-    ctx.fillStyle = "#5a5a72"; ctx.font = "14px Inter"; ctx.textAlign="center";
-    ctx.fillText("Import a repository to build the graph.", w/2, h/2);
-  }
-}
-function hit(x,y){
-  for(let i=state.graphNodes.length-1;i>=0;i--){
-    const n = state.graphNodes[i];
-    const r = 14 + Math.min(10, n.connections);
-    if((x-n.x)**2 + (y-n.y)**2 <= r*r) return n;
-  }
-  return null;
-}
-function onDown(e){
-  const {x,y} = pos(e); const n = hit(x,y);
-  if(n){ drag={id:n.id,dx:x-n.x,dy:y-n.y}; canvas.style.cursor="grabbing"; }
-}
-function onMove(e){
-  const {x,y} = pos(e);
-  if(drag){
-    const n = state.graphNodes[drag.id]; n.x = x-drag.dx; n.y = y-drag.dy; drawGraph();
-  } else {
-    canvas.style.cursor = hit(x,y) ? "pointer" : "grab";
-  }
-}
-function onClick(e){
-  if(drag) return;
-  const {x,y} = pos(e); const n = hit(x,y);
-  if(n){ selected = n.id; showNode(n); drawGraph(); }
-}
-function pos(e){ const r = canvas.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; }
-function showNode(n){
-  const box = document.getElementById("nodeDetails");
-  const rec = n.risk==="high" ? "⚠️ Wide blast radius. Require design review and staged rollout." :
-             n.risk==="medium" ? "Contained impact. Standard review is sufficient." :
-             "Low risk. Safe for direct changes with tests.";
-  box.innerHTML = `
-    <h4>${escapeHtml(n.name)}</h4>
-    <div class="kv"><span>Type</span><span style="color:${COLORS[n.type]}">${n.type}</span></div>
-    <div class="kv"><span>Risk</span><span>${n.risk}</span></div>
-    <div class="kv"><span>Connections</span><span>${n.connections}</span></div>
-    <div class="rec">${rec}</div>`;
-}
-
-/* ---------- Search ---------- */
-document.getElementById("searchBtn").onclick = runSearch;
-document.getElementById("searchInput").addEventListener("keydown", e=>{ if(e.key==="Enter") runSearch(); });
-document.querySelectorAll(".chip").forEach(c => c.onclick = () => { document.getElementById("searchInput").value = c.dataset.q; runSearch(); });
-function runSearch(){
-  const q = document.getElementById("searchInput").value.trim();
-  const el = document.getElementById("searchResults");
-  if(!q){ el.innerHTML = ""; return; }
-  const base = ["src/auth/session.ts","src/api/routes/index.ts","packages/core/validation.ts","services/billing/handler.py","apps/web/hooks/useUser.ts","infra/db/pool.ts","lib/errors/registry.ts"];
-  const results = Array.from({length:5}).map((_,i)=>({
-    title: q[0].toUpperCase()+q.slice(1)+" — reference "+(i+1),
-    snippet: `Semantic match for "${q}" in module boundary; likely relevant to ${q.split(" ")[0]} concerns.`,
-    path: base[(hash(q)+i)%base.length],
-    score: 98 - i*7 - (hash(q)%5)
-  }));
-  el.innerHTML = results.map(r=>`
-    <div class="sresult">
-      <span class="score">${r.score}%</span>
-      <div class="t">${escapeHtml(r.title)}</div>
-      <div class="s">${escapeHtml(r.snippet)}</div>
-      <div class="p">${escapeHtml(r.path)}</div>
-    </div>`).join("");
-}
-
-/* ---------- Impact ---------- */
-document.getElementById("impactBtn").onclick = runImpact;
-document.getElementById("impactInput").addEventListener("keydown", e=>{ if(e.key==="Enter") runImpact(); });
-function runImpact(){
-  const q = document.getElementById("impactInput").value.trim();
-  const el = document.getElementById("impactResults");
-  if(!q){ el.innerHTML=""; return; }
-  el.innerHTML = `<div style="color:var(--text-secondary)"><span class="spinner"></span> Analyzing blast radius...</div>`;
-  setTimeout(()=>{
-    const risk = 20 + hash(q)%80;
-    const files = 4 + hash(q)%22;
-    const services = 1 + hash(q)%5;
-    const color = risk>70?"#ef4444":risk>40?"#f97316":"#22c55e";
-    const level = risk>70?"crit":risk>40?"med":"low";
-    const rec = risk>70?"Critical — coordinate a change window and require senior review.":
-                risk>40?"Medium — add integration tests and notify service owners.":
-                "Low — proceed with standard PR review.";
-    const impacted = ["src/api/auth.py","src/api/session.py","src/lib/token.py","services/billing/handler.py","apps/web/hooks/useUser.ts","infra/db/pool.ts","lib/errors/registry.ts"].slice(0, files>7?7:files);
-    el.innerHTML = `
-      <div class="k-box"><div class="k">Risk score</div>
-        <div class="v" style="color:${color}">${risk}/100</div>
-        <div class="risk-bar"><div class="risk-fill" style="width:${risk}%;background:${color}"></div></div>
-      </div>
-      <div class="impact-grid">
-        <div class="k-box"><div class="k">Affected files</div><div class="v">${files}</div></div>
-        <div class="k-box"><div class="k">Affected services</div><div class="v">${services}</div></div>
-        <div class="k-box"><div class="k">Target</div><div class="v" style="font-size:14px;font-family:'JetBrains Mono',monospace;word-break:break-all">${escapeHtml(q)}</div></div>
-      </div>
-      <div class="file-list">${impacted.map(f=>`<div>▸ ${escapeHtml(f)}</div>`).join("")}</div>
-      <div class="rec-box ${level}">${rec}</div>`;
-  }, 700);
-}
-
-/* ---------- Agents ---------- */
-const AGENTS = [
-  {id:"architect",ico:"🏗️",name:"Architect Agent",role:"Topology & boundary reasoning across services.",caps:["topology","boundaries","contracts"]},
-  {id:"security",ico:"🔒",name:"Security Agent",role:"SAST, secrets scanning, and supply chain analysis.",caps:["SAST","secrets","supply-chain"]},
-  {id:"debug",ico:"🐛",name:"Debug Agent",role:"Trace correlation and root cause identification.",caps:["traces","logs","RCA"]},
-  {id:"infra",ico:"⚙️",name:"Infra Agent",role:"Platform operations and reliability workflows.",caps:["k8s","CI/CD","observability"]},
-  {id:"onboarding",ico:"🎓",name:"Onboarding Agent",role:"Codebase context for new engineers.",caps:["walkthroughs","glossary","tours"]},
+const routes = [
+  {id:"welcome",  label:"Welcome",       icon:"◆"},
+  {id:"dashboard",label:"Dashboard",     icon:"▤", kbd:"1"},
+  {id:"graph",    label:"Knowledge Graph",icon:"◈", kbd:"2"},
+  {id:"search",   label:"Semantic Search",icon:"⌕", kbd:"3"},
+  {id:"impact",   label:"Impact Predict",icon:"⚡", kbd:"4"},
+  {id:"constitution",label:"Constitution",icon:"§", kbd:"5"},
+  {id:"agents",   label:"Agents",        icon:"◉", kbd:"6"},
 ];
-const activeAgents = new Set();
-function renderAgents(){
-  const el = document.getElementById("agentGrid");
-  el.innerHTML = AGENTS.map(a=>{
-    const active = activeAgents.has(a.id);
-    return `<div class="card agent" data-id="${a.id}">
-      <div class="a-head">
-        <div class="a-ico">${a.ico}</div>
-        <div class="a-name">${a.name}</div>
-        <div class="a-status ${active?"":""}">● Ready</div>
+
+/* ---------- persistence ---------- */
+function save(){ try{ if(state.repo) localStorage.setItem(LS, JSON.stringify({repo:stripForSave(state.repo), agents:state.agents})); }catch(e){} }
+function stripForSave(r){
+  // avoid blowing quota: drop file contents, keep metadata
+  return {...r, files:r.files.map(f=>({...f, content: f.content && f.content.length<4000 ? f.content : null}))};
+}
+function load(){
+  try{
+    const raw = localStorage.getItem(LS); if(!raw) return;
+    const d = JSON.parse(raw);
+    if(d.repo) state.repo = d.repo;
+    if(d.agents) state.agents = d.agents;
+  }catch(e){}
+}
+load();
+if(state.repo) state.route="dashboard";
+
+/* ---------- render shell ---------- */
+function renderNav(){
+  const n = document.getElementById("nav");
+  n.innerHTML = routes.map(r=>`
+    <div class="item ${state.route===r.id?'active':''}" data-r="${r.id}">
+      <span style="width:14px;text-align:center;opacity:.7">${r.icon}</span>
+      <span class="lbl">${r.label}</span>
+      ${r.kbd?`<span class="kbd">${r.kbd}</span>`:''}
+    </div>`).join("");
+  n.querySelectorAll(".item").forEach(el=>el.onclick=()=>go(el.dataset.r));
+}
+function go(r){ state.route=r; render(); }
+
+function renderTop(){
+  document.getElementById("crumbs").textContent = routes.find(x=>x.id===state.route)?.label || "";
+  const chip = document.getElementById("repoChip");
+  const btn = document.getElementById("btnReset");
+  if(state.repo){
+    chip.style.display=""; btn.style.display="";
+    document.getElementById("repoName").textContent = state.repo.name + " · " + state.repo.files.length + " files";
+  } else { chip.style.display="none"; btn.style.display="none"; }
+}
+document.getElementById("btnReset").onclick=()=>{
+  if(!confirm("Clear current repository?")) return;
+  state.repo=null; localStorage.removeItem(LS); state.route="welcome"; render();
+};
+
+function setProgress(p){
+  const el=document.getElementById("prog"), b=document.getElementById("progB");
+  if(p==null){ el.style.display="none"; return; }
+  el.style.display="block"; b.style.width=Math.round(p*100)+"%";
+  if(p>=1) setTimeout(()=>{el.style.display="none";b.style.width="0%"},400);
+}
+
+/* ---------- views ---------- */
+function render(){
+  renderNav(); renderTop();
+  const v=document.getElementById("view");
+  v.innerHTML="";
+  if(!state.repo && state.route!=="welcome") state.route="welcome";
+  ({
+    welcome: viewWelcome,
+    dashboard: viewDashboard,
+    graph: viewGraph,
+    search: viewSearch,
+    impact: viewImpact,
+    constitution: viewConstitution,
+    agents: viewAgents,
+  })[state.route](v);
+}
+
+/* ---------- WELCOME ---------- */
+function viewWelcome(root){
+  root.innerHTML = `
+  <div class="welcome">
+    <h1>Engineering Memory Infrastructure</h1>
+    <p class="tag">Most tools optimize writing code. Axiom optimizes <em>understanding</em> codebases — locally, in your browser, with nothing sent anywhere.</p>
+    <div class="drop" id="drop">
+      <h3>Drop a folder, a ZIP, or paste a public GitHub URL</h3>
+      <div class="dim" style="font-size:12px">Analysis runs entirely in this tab. No login. No upload.</div>
+      <div class="row">
+        <input id="ghUrl" placeholder="https://github.com/owner/repo" />
+        <button class="primary" id="btnClone">Analyze</button>
       </div>
-      <div class="a-role">${a.role}</div>
-      <div class="tags">${a.caps.map(c=>`<span class="tag">${c}</span>`).join("")}</div>
-      <div style="margin-top:12px"><button class="btn btn-sm ${active?"btn-secondary":"btn-primary"}" data-act="${a.id}">${active?"Deactivate":"Activate"}</button></div>
-    </div>`;
-  }).join("");
-  el.querySelectorAll("[data-act]").forEach(b=>{
-    b.onclick = ()=>{
-      const id = b.dataset.act;
-      const card = b.closest(".agent");
-      const status = card.querySelector(".a-status");
-      if(activeAgents.has(id)){
-        activeAgents.delete(id); state.activeAgents = activeAgents.size; save(); return;
+      <div class="row" style="justify-content:center;margin-top:10px">
+        <button id="btnPickDir">Choose Folder</button>
+        <button id="btnPickZip">Upload ZIP</button>
+        <button id="btnDemo">Try Demo Repo</button>
+        <input type="file" id="fileDir" webkitdirectory directory multiple style="display:none"/>
+        <input type="file" id="fileZip" accept=".zip" style="display:none"/>
+      </div>
+    </div>
+    <div class="langs">
+      ${["JavaScript","TypeScript","Python","Go","Rust","Java","C++","C#","Ruby","PHP","Kotlin","Swift","Scala"].map(l=>`<span class="chip">${l}</span>`).join("")}
+    </div>
+    <div class="feat-grid">
+      ${[
+        ["01","Knowledge Graph","Interactive dependency map of every module."],
+        ["02","Semantic Search","Query by intent — 'where is auth' — not just grep."],
+        ["03","Impact Prediction","Score risk for any file before you touch it."],
+        ["04","Constitution","Boundaries, ownership, blast radius, dark matter."],
+        ["05","Agents","Five specialists analyze architecture, security, infra…"],
+        ["06","Local First","Nothing leaves your browser. Works offline."],
+      ].map(f=>`<div class="feat"><div class="n">${f[0]}</div><h4>${f[1]}</h4><p>${f[2]}</p></div>`).join("")}
+    </div>
+  </div>`;
+  const drop=root.querySelector("#drop");
+  ["dragover","dragenter"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add("hover")}));
+  ["dragleave","drop"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove("hover")}));
+  drop.addEventListener("drop", async ev=>{
+    const items=[...(ev.dataTransfer.items||[])];
+    const files=[...(ev.dataTransfer.files||[])];
+    if(files.length===1 && /\.zip$/i.test(files[0].name)) return ingestZip(files[0]);
+    if(items.length && items[0].webkitGetAsEntry){
+      const entries = items.map(i=>i.webkitGetAsEntry()).filter(Boolean);
+      const collected=[]; for(const e of entries) await walkEntry(e,"",collected);
+      return ingestFiles(collected, entries[0]?.name || "dropped");
+    }
+    if(files.length) ingestFiles(files.map(f=>({path:f.webkitRelativePath||f.name, file:f})), "dropped");
+  });
+  root.querySelector("#btnPickDir").onclick=()=>root.querySelector("#fileDir").click();
+  root.querySelector("#btnPickZip").onclick=()=>root.querySelector("#fileZip").click();
+  root.querySelector("#fileDir").onchange=e=>{
+    const list=[...e.target.files].map(f=>({path:f.webkitRelativePath||f.name, file:f}));
+    const name = list[0]?.path.split("/")[0] || "local";
+    ingestFiles(list, name);
+  };
+  root.querySelector("#fileZip").onchange=e=>{ if(e.target.files[0]) ingestZip(e.target.files[0]); };
+  root.querySelector("#btnClone").onclick=()=>{
+    const u=root.querySelector("#ghUrl").value.trim(); if(u) cloneGithub(u);
+  };
+  root.querySelector("#btnDemo").onclick=()=>loadDemo();
+}
+
+async function walkEntry(entry, prefix, out){
+  if(entry.isFile){
+    await new Promise(res=>entry.file(f=>{ out.push({path:prefix+entry.name, file:f}); res(); }));
+  } else if(entry.isDirectory){
+    const reader=entry.createReader();
+    const reads=await new Promise(res=>reader.readEntries(res));
+    for(const c of reads) await walkEntry(c, prefix+entry.name+"/", out);
+  }
+}
+
+/* ---------- ingest ---------- */
+const CODE_EXT = /\.(js|jsx|mjs|cjs|ts|tsx|py|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|scala|sh|bash|sql|html|css|scss|vue|svelte|yaml|yml|toml|json|md)$/i;
+const SKIP = /(^|\/)(node_modules|\.git|dist|build|\.next|\.venv|venv|__pycache__|target|vendor|\.turbo|\.cache|coverage)(\/|$)/;
+
+async function ingestFiles(list, name){
+  setProgress(0);
+  const kept = list.filter(x=>!SKIP.test(x.path) && CODE_EXT.test(x.path) && x.file.size < 400*1024);
+  const files=[]; let i=0;
+  for(const it of kept){
+    i++; if(i%25===0) setProgress(0.1 + 0.6*i/kept.length);
+    try{ const txt = await it.file.text(); files.push(mkFile(it.path, txt)); }catch(e){}
+    if(files.length>2000) break;
+  }
+  finalize(name, files);
+}
+
+async function ingestZip(file){
+  setProgress(0.05);
+  // lightweight zip parser via JSZip CDN
+  if(!window.JSZip){
+    await loadScript("https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js");
+  }
+  const zip = await JSZip.loadAsync(file);
+  const entries = Object.values(zip.files).filter(e=>!e.dir && !SKIP.test(e.name) && CODE_EXT.test(e.name));
+  const files=[]; let i=0;
+  for(const e of entries){
+    i++; if(i%25===0) setProgress(0.1+0.6*i/entries.length);
+    try{
+      const buf = await e.async("uint8array");
+      if(buf.length > 400*1024) continue;
+      const txt = new TextDecoder().decode(buf);
+      files.push(mkFile(e.name, txt));
+    }catch(_){}
+    if(files.length>2000) break;
+  }
+  const name = file.name.replace(/\.zip$/i,"");
+  finalize(name, files);
+}
+
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s)})}
+
+async function cloneGithub(url){
+  const m = url.match(/github\.com\/([^\/\s]+)\/([^\/\s#?]+)/i);
+  if(!m){ alert("Enter a valid GitHub URL"); return; }
+  const owner=m[1], repo=m[2].replace(/\.git$/,"");
+  setProgress(0.05);
+  try{
+    const meta = await fetch(`https://api.github.com/repos/${owner}/${repo}`).then(r=>r.json());
+    const branch = meta.default_branch || "main";
+    setProgress(0.15);
+    const tree = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`).then(r=>r.json());
+    if(!tree.tree){ throw new Error(tree.message || "Failed to fetch tree"); }
+    const blobs = tree.tree.filter(t=>t.type==="blob" && !SKIP.test(t.path) && CODE_EXT.test(t.path) && (t.size||0) < 200*1024).slice(0,400);
+    const files=[]; let done=0;
+    // fetch via raw.githubusercontent.com to save API quota
+    const CONC=8;
+    async function worker(q){
+      while(q.length){
+        const b = q.shift();
+        try{
+          const txt = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${b.path}`).then(r=>r.text());
+          files.push(mkFile(b.path, txt));
+        }catch(_){}
+        done++; setProgress(0.2 + 0.6*done/blobs.length);
       }
-      status.textContent = "● Activating"; status.className = "a-status busy";
-      b.disabled = true; b.innerHTML = `<span class="spinner"></span> Activating`;
-      setTimeout(()=>{
-        activeAgents.add(id); state.activeAgents = activeAgents.size; save();
-      }, 2500);
-    };
+    }
+    const q=[...blobs]; await Promise.all(Array.from({length:CONC},()=>worker(q)));
+    finalize(`${owner}/${repo}`, files);
+  }catch(e){
+    setProgress(null); alert("Clone failed: "+(e.message||e));
+  }
+}
+
+function loadDemo(){
+  const demo = [
+    ["src/index.ts",`import {createServer} from './server'\nimport {loadConfig} from './config'\nconst cfg=loadConfig()\ncreateServer(cfg).listen(cfg.port)`],
+    ["src/server.ts",`import express from 'express'\nimport {authRouter} from './auth/router'\nimport {paymentsRouter} from './payments/router'\nimport {usersRouter} from './users/router'\nexport function createServer(cfg){ const a=express(); a.use('/auth',authRouter); a.use('/pay',paymentsRouter); a.use('/users',usersRouter); return a }`],
+    ["src/config.ts",`export function loadConfig(){ return {port: Number(process.env.PORT||3000), jwtSecret: process.env.JWT_SECRET } }`],
+    ["src/auth/router.ts",`import {Router} from 'express'\nimport {login, register, verifyToken} from './service'\nexport const authRouter=Router()\nauthRouter.post('/login',login); authRouter.post('/register',register); authRouter.get('/me',verifyToken)`],
+    ["src/auth/service.ts",`import jwt from 'jsonwebtoken'\nimport {findUser, createUser} from '../users/repo'\nexport async function login(req,res){ const u=await findUser(req.body.email); if(!u) return res.status(401).end(); res.json({token:jwt.sign({id:u.id},process.env.JWT_SECRET)}) }\nexport async function register(req,res){ const u=await createUser(req.body); res.json(u) }\nexport function verifyToken(req,res){ try{ const t=req.headers.authorization?.split(' ')[1]; res.json(jwt.verify(t,process.env.JWT_SECRET)) }catch{ res.status(401).end() } }`],
+    ["src/payments/router.ts",`import {Router} from 'express'\nimport {charge, refund, validate} from './service'\nexport const paymentsRouter=Router()\npaymentsRouter.post('/charge',charge); paymentsRouter.post('/refund',refund); paymentsRouter.post('/validate',validate)`],
+    ["src/payments/service.ts",`import {findUser} from '../users/repo'\nimport {stripe} from './stripe'\nexport async function validate(req,res){ /* input validation for payment amount and currency */ if(req.body.amount<=0) return res.status(400).end(); res.json({ok:true}) }\nexport async function charge(req,res){ const u=await findUser(req.body.userId); const c=await stripe.charges.create({amount:req.body.amount,currency:'usd',customer:u.stripeId}); res.json(c) }\nexport async function refund(req,res){ res.json(await stripe.refunds.create({charge:req.body.chargeId})) }`],
+    ["src/payments/stripe.ts",`import Stripe from 'stripe'\nexport const stripe=new Stripe(process.env.STRIPE_KEY)`],
+    ["src/users/router.ts",`import {Router} from 'express'\nimport {getUser, listUsers} from './service'\nexport const usersRouter=Router()\nusersRouter.get('/',listUsers); usersRouter.get('/:id',getUser)`],
+    ["src/users/service.ts",`import {findUser, allUsers} from './repo'\nexport async function getUser(req,res){ res.json(await findUser(req.params.id)) }\nexport async function listUsers(req,res){ res.json(await allUsers()) }`],
+    ["src/users/repo.ts",`import {db} from '../db'\nexport const findUser = id=>db.query('select * from users where id=$1',[id]).then(r=>r.rows[0])\nexport const createUser = u=>db.query('insert into users(email,name) values($1,$2) returning *',[u.email,u.name]).then(r=>r.rows[0])\nexport const allUsers = ()=>db.query('select * from users').then(r=>r.rows)`],
+    ["src/db.ts",`import {Pool} from 'pg'\nexport const db=new Pool({connectionString:process.env.DATABASE_URL})`],
+    ["src/utils/logger.ts",`export const log=(...a)=>console.log('[axiom]',...a)`],
+    ["Dockerfile",`FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci\nCMD ["node","dist/index.js"]`],
+    ["package.json",`{"name":"demo","dependencies":{"express":"^4","jsonwebtoken":"^9","pg":"^8","stripe":"^14"}}`],
+    ["README.md","# Demo Repo\nSample multi-service TypeScript app used to showcase Axiom analysis."],
+  ];
+  const files = demo.map(([p,c])=>mkFile(p,c));
+  finalize("demo/axiom-sample", files);
+}
+
+/* ---------- analysis ---------- */
+function detectLang(p){
+  const e=(p.split(".").pop()||"").toLowerCase();
+  return ({js:"JavaScript",jsx:"JavaScript",mjs:"JavaScript",cjs:"JavaScript",ts:"TypeScript",tsx:"TypeScript",py:"Python",go:"Go",rs:"Rust",java:"Java",kt:"Kotlin",swift:"Swift",rb:"Ruby",php:"PHP",cs:"C#",scala:"Scala",c:"C",cc:"C++",cpp:"C++",h:"C",hpp:"C++",sh:"Shell",bash:"Shell",sql:"SQL",html:"HTML",css:"CSS",scss:"SCSS",vue:"Vue",svelte:"Svelte",yml:"YAML",yaml:"YAML",toml:"TOML",json:"JSON",md:"Markdown"})[e]||"Other";
+}
+function moduleOf(p){
+  const parts=p.split("/").filter(x=>x && x!=="src" && x!=="app" && x!=="lib");
+  if(parts.length<=1) return "root";
+  return parts.slice(0, Math.min(2, parts.length-1)).join("/");
+}
+function mkFile(path, content){
+  const lang = detectLang(path);
+  const lines = content ? content.split("\n").length : 0;
+  const imports = extractImports(content||"", lang);
+  return { path, content, lang, module: moduleOf(path), lines, size: content?content.length:0, imports, tokens: tokenize(content||"") };
+}
+function extractImports(src, lang){
+  const out=new Set();
+  const re1 = /(?:from\s+['"]([^'"]+)['"])|(?:require\(\s*['"]([^'"]+)['"]\s*\))|(?:import\s+['"]([^'"]+)['"])/g;
+  const re2 = /^\s*import\s+([^\s;]+)/gm; // python/java loose
+  let m; while((m=re1.exec(src))) out.add(m[1]||m[2]||m[3]);
+  while((m=re2.exec(src))) out.add(m[1]);
+  return [...out].filter(x=>x && !x.startsWith("http"));
+}
+function tokenize(s){
+  return (s.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g)||[]).slice(0,500);
+}
+
+function buildGraph(files){
+  const byPath={}; files.forEach(f=>byPath[f.path]=f);
+  const edges=[];
+  for(const f of files){
+    for(const imp of f.imports){
+      if(!imp.startsWith(".")) continue;
+      // resolve relative
+      const base = f.path.split("/"); base.pop();
+      const parts=(base.join("/")+"/"+imp).split("/");
+      const stack=[]; for(const p of parts){ if(p===".."){stack.pop()} else if(p!=="." && p!=="") stack.push(p) }
+      const resolved = stack.join("/");
+      const cand = [resolved, resolved+".ts", resolved+".js", resolved+".tsx", resolved+"/index.ts", resolved+"/index.js"];
+      const hit = cand.find(c=>byPath[c]);
+      if(hit) edges.push([f.path, hit]);
+    }
+  }
+  // module aggregation
+  const modules={};
+  for(const f of files){
+    modules[f.module] ||= {name:f.module, files:0, lines:0, langs:{}};
+    modules[f.module].files++;
+    modules[f.module].lines+=f.lines;
+    modules[f.module].langs[f.lang]=(modules[f.module].langs[f.lang]||0)+1;
+  }
+  // risk: fan-in from other files
+  const fanIn={}; edges.forEach(([a,b])=>fanIn[b]=(fanIn[b]||0)+1);
+  files.forEach(f=>{
+    const fi = fanIn[f.path]||0;
+    f.fanIn = fi;
+    f.fanOut = f.imports.filter(i=>i.startsWith(".")).length;
+    f.risk = Math.min(100, Math.round(fi*15 + (f.lines>400?20:0) + (/auth|payment|billing|crypto|secret/i.test(f.path)?25:0)));
+  });
+  return {edges, modules, fanIn};
+}
+
+function finalize(name, files){
+  setProgress(0.85);
+  const {edges, modules, fanIn} = buildGraph(files);
+  const health = computeHealth(files, edges);
+  state.repo = { name, files, edges, modules, health, createdAt: Date.now() };
+  save(); setProgress(1);
+  state.route="dashboard"; render();
+}
+function computeHealth(files, edges){
+  const avgLines = files.reduce((s,f)=>s+f.lines,0)/Math.max(1,files.length);
+  const highRisk = files.filter(f=>f.risk>=60).length;
+  const orphans = files.filter(f=>!edges.find(e=>e[0]===f.path||e[1]===f.path)).length;
+  const score = Math.max(0, Math.round(100 - highRisk*2 - (avgLines>200?15:0) - Math.min(20, orphans/Math.max(1,files.length)*40)));
+  return {score, avgLines:Math.round(avgLines), highRisk, orphans};
+}
+
+/* ---------- DASHBOARD ---------- */
+function viewDashboard(root){
+  const r=state.repo;
+  const langCount={}; r.files.forEach(f=>langCount[f.lang]=(langCount[f.lang]||0)+1);
+  const topLangs = Object.entries(langCount).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  const risky = [...r.files].sort((a,b)=>b.risk-a.risk).slice(0,8);
+  const modules = Object.values(r.modules).sort((a,b)=>b.lines-a.lines).slice(0,8);
+
+  root.innerHTML = `
+  <div class="grid g-cards" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+    <div class="card"><h5>Health Score</h5><div class="v" style="color:${r.health.score>75?'var(--ok)':r.health.score>50?'var(--warn)':'var(--bad)'}">${r.health.score}</div><div class="sub">out of 100</div></div>
+    <div class="card"><h5>Files</h5><div class="v">${r.files.length}</div><div class="sub">${Object.keys(r.modules).length} modules</div></div>
+    <div class="card"><h5>Edges</h5><div class="v">${r.edges.length}</div><div class="sub">import relationships</div></div>
+    <div class="card"><h5>High-Risk</h5><div class="v" style="color:var(--bad)">${r.health.highRisk}</div><div class="sub">risk ≥ 60</div></div>
+    <div class="card"><h5>Avg Lines/File</h5><div class="v">${r.health.avgLines}</div><div class="sub">${r.health.orphans} orphaned</div></div>
+  </div>
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card big">
+      <div class="card-h"><h4>Top Modules</h4></div>
+      <div class="card-b" style="padding:0">
+        <div class="file-list">${modules.map(m=>`
+          <div class="fi"><span>${m.name}</span><span class="path">${Object.keys(m.langs).slice(0,3).join(", ")}</span><span class="risk ok">${m.files} files</span></div>
+        `).join("")}</div>
+      </div>
+    </div>
+    <div class="card big">
+      <div class="card-h"><h4>Highest Risk Files</h4></div>
+      <div class="card-b" style="padding:0">
+        <div class="file-list">${risky.map(f=>`
+          <div class="fi" data-p="${f.path}"><span>${f.path.split("/").pop()}</span><span class="path">${f.path}</span><span class="risk ${f.risk>=70?'bad':f.risk>=40?'warn':'ok'}">${f.risk}</span></div>
+        `).join("")}</div>
+      </div>
+    </div>
+  </div>
+  <div class="grid"><div class="card big">
+    <div class="card-h"><h4>Language Mix</h4></div>
+    <div class="card-b">
+      <div style="display:flex;gap:6px;height:24px;border-radius:6px;overflow:hidden;background:var(--panel-2)">
+        ${topLangs.map(([l,c],i)=>`<div title="${l} · ${c}" style="flex:${c};background:${langColor(l)}"></div>`).join("")}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">
+        ${topLangs.map(([l,c])=>`<span class="chip"><span class="lg-dot" style="background:${langColor(l)}"></span>${l} · ${c}</span>`).join("")}
+      </div>
+    </div>
+  </div></div>`;
+  root.querySelectorAll(".fi[data-p]").forEach(el=>el.onclick=()=>openFile(el.dataset.p));
+}
+
+function langColor(l){
+  const m={JavaScript:"#f7df1e",TypeScript:"#3178c6",Python:"#3572A5",Go:"#00ADD8",Rust:"#dea584",Java:"#b07219","C++":"#f34b7d",C:"#555555","C#":"#178600",Ruby:"#701516",PHP:"#4F5D95",Kotlin:"#A97BFF",Swift:"#F05138",HTML:"#e34c26",CSS:"#563d7c",SCSS:"#c6538c",Vue:"#41b883",Svelte:"#ff3e00",JSON:"#292929",YAML:"#cb171e",Markdown:"#083fa1",Shell:"#89e051",SQL:"#e38c00"};
+  return m[l]||"#4b5563";
+}
+
+/* ---------- GRAPH ---------- */
+function viewGraph(root){
+  root.innerHTML = `<div class="graph-wrap"><canvas id="graph"></canvas>
+    <div class="graph-legend" id="legend"></div>
+    <div class="node-info" id="nodeInfo" style="display:none"></div></div>`;
+  const wrap=root.querySelector(".graph-wrap"), cv=root.querySelector("#graph");
+  const ctx=cv.getContext("2d");
+  function resize(){ cv.width=wrap.clientWidth*devicePixelRatio; cv.height=wrap.clientHeight*devicePixelRatio; cv.style.width=wrap.clientWidth+"px"; cv.style.height=wrap.clientHeight+"px"; ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
+  resize(); window.addEventListener("resize",resize);
+
+  const mods = Object.values(state.repo.modules);
+  const nodes = mods.map((m,i)=>({id:m.name, size:Math.min(50, 10+Math.sqrt(m.lines)/2), files:m.files, lines:m.lines, langs:m.langs, x:0,y:0,vx:0,vy:0}));
+  const idx={}; nodes.forEach((n,i)=>idx[n.id]=i);
+  const links=[];
+  const seen=new Set();
+  for(const [a,b] of state.repo.edges){
+    const ma=moduleOf(a), mb=moduleOf(b);
+    if(ma===mb) continue;
+    const k=ma+"|"+mb; if(seen.has(k)) continue; seen.add(k);
+    if(idx[ma]!=null && idx[mb]!=null) links.push({s:idx[ma],t:idx[mb]});
+  }
+  // init positions
+  nodes.forEach((n,i)=>{ const a=i/nodes.length*Math.PI*2; n.x=wrap.clientWidth/2+Math.cos(a)*180; n.y=wrap.clientHeight/2+Math.sin(a)*180; });
+
+  let hover=null, dragging=null, off={x:0,y:0};
+  cv.addEventListener("mousemove",e=>{
+    const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+    if(dragging){ dragging.x=x-off.x; dragging.y=y-off.y; dragging.vx=dragging.vy=0; return; }
+    hover=nodes.find(n=>Math.hypot(n.x-x,n.y-y) < n.size);
+    if(hover){ showInfo(hover); } else hideInfo();
+  });
+  cv.addEventListener("mousedown",e=>{ if(hover){ dragging=hover; const r=cv.getBoundingClientRect(); off.x=e.clientX-r.left-hover.x; off.y=e.clientY-r.top-hover.y; }});
+  window.addEventListener("mouseup",()=>dragging=null);
+
+  function showInfo(n){
+    const el=document.getElementById("nodeInfo"); if(!el) return;
+    el.style.display="";
+    el.innerHTML=`<div style="font-weight:600;margin-bottom:6px">${n.id}</div>
+      <div class="dim">${n.files} files · ${n.lines} lines</div>
+      <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">
+        ${Object.entries(n.langs).map(([l,c])=>`<span class="chip"><span class="lg-dot" style="background:${langColor(l)}"></span>${l}·${c}</span>`).join("")}
+      </div>`;
+  }
+  function hideInfo(){ const el=document.getElementById("nodeInfo"); if(el) el.style.display="none"; }
+
+  const legend=document.getElementById("legend");
+  legend.innerHTML = Object.entries({JavaScript:1,TypeScript:1,Python:1,Go:1,Other:1}).map(([l])=>`<span><span class="lg-dot" style="background:${langColor(l)}"></span>${l}</span>`).join("");
+
+  function step(){
+    // force-directed
+    const W=wrap.clientWidth, H=wrap.clientHeight, cx=W/2, cy=H/2;
+    for(let i=0;i<nodes.length;i++){
+      const a=nodes[i];
+      for(let j=i+1;j<nodes.length;j++){
+        const b=nodes[j]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||.01;
+        const rep = 4000/(d*d); dx/=d; dy/=d;
+        a.vx-=dx*rep*.001; a.vy-=dy*rep*.001;
+        b.vx+=dx*rep*.001; b.vy+=dy*rep*.001;
+      }
+      // center gravity
+      a.vx += (cx-a.x)*.0008; a.vy += (cy-a.y)*.0008;
+    }
+    for(const l of links){
+      const a=nodes[l.s], b=nodes[l.t];
+      const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||.01;
+      const target=120, k=(d-target)*.02;
+      const ux=dx/d, uy=dy/d;
+      a.vx+=ux*k; a.vy+=uy*k; b.vx-=ux*k; b.vy-=uy*k;
+    }
+    for(const n of nodes){ if(n===dragging) continue; n.vx*=.85; n.vy*=.85; n.x+=n.vx; n.y+=n.vy; }
+
+    ctx.clearRect(0,0,W,H);
+    // edges
+    ctx.strokeStyle="rgba(125,211,252,.15)"; ctx.lineWidth=1;
+    for(const l of links){ const a=nodes[l.s], b=nodes[l.t]; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+    // nodes
+    for(const n of nodes){
+      const topLang = Object.entries(n.langs).sort((a,b)=>b[1]-a[1])[0]?.[0]||"Other";
+      const c = langColor(topLang);
+      ctx.beginPath(); ctx.arc(n.x,n.y,n.size,0,Math.PI*2);
+      const g=ctx.createRadialGradient(n.x,n.y,1,n.x,n.y,n.size);
+      g.addColorStop(0,c); g.addColorStop(1,"#0f1420");
+      ctx.fillStyle=g; ctx.fill();
+      ctx.strokeStyle= n===hover?"#7dd3fc":"rgba(255,255,255,.15)"; ctx.lineWidth= n===hover?2:1; ctx.stroke();
+      ctx.fillStyle="#e6ebf2"; ctx.font="11px "+getComputedStyle(document.body).fontFamily;
+      ctx.textAlign="center"; ctx.fillText(n.id, n.x, n.y+n.size+12);
+    }
+    if(state.route==="graph") requestAnimationFrame(step);
+  }
+  step();
+}
+
+/* ---------- SEARCH ---------- */
+function viewSearch(root){
+  root.innerHTML = `
+    <div class="search-box">
+      <input id="q" placeholder="Search by meaning — e.g. 'authentication logic', 'payment validation', 'database queries'" value="${state.q||''}"/>
+      <div class="dim" style="margin-top:6px;font-size:11px">Semantic ranking uses token overlap + path & module signals. Runs entirely in your browser.</div>
+    </div>
+    <div class="results" id="res"></div>`;
+  const q=root.querySelector("#q"), res=root.querySelector("#res");
+  const doSearch=()=>{
+    const v=q.value.trim(); state.q=v;
+    if(!v){ res.innerHTML=`<div class="empty">Type a query to search across ${state.repo.files.length} files.</div>`; return; }
+    const terms=v.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g)||[];
+    const scored=state.repo.files.map(f=>{
+      let s=0;
+      for(const t of terms){
+        if(f.path.toLowerCase().includes(t)) s+=8;
+        if(f.module.toLowerCase().includes(t)) s+=4;
+        const tc = f.tokens.filter(x=>x===t).length; s+=tc*1;
+        if((f.content||"").toLowerCase().includes(t)) s+=2;
+      }
+      return {f,s};
+    }).filter(x=>x.s>0).sort((a,b)=>b.s-a.s).slice(0,30);
+    if(!scored.length){ res.innerHTML=`<div class="empty">No matches.</div>`; return; }
+    res.innerHTML = scored.map(({f,s})=>{
+      const snip = snippet(f.content||"", terms);
+      return `<div class="result" data-p="${f.path}">
+        <span class="score">score ${s}</span>
+        <div class="p">${f.path}</div>
+        <div class="dim" style="font-size:11px;margin-top:2px">${f.lang} · ${f.lines} lines · risk ${f.risk}</div>
+        ${snip?`<div class="snip">${snip}</div>`:''}
+      </div>`;
+    }).join("");
+    res.querySelectorAll(".result").forEach(el=>el.onclick=()=>openFile(el.dataset.p));
+  };
+  q.addEventListener("input",doSearch);
+  doSearch();
+  setTimeout(()=>q.focus(),50);
+}
+function snippet(src, terms){
+  if(!src) return "";
+  const lc = src.toLowerCase();
+  for(const t of terms){
+    const i=lc.indexOf(t); if(i>=0){
+      const start=Math.max(0,i-60), end=Math.min(src.length,i+140);
+      return escapeHtml(src.slice(start,end)).replace(new RegExp(t,"gi"),m=>`<mark style="background:rgba(125,211,252,.25);color:#fff;padding:0 2px">${m}</mark>`);
+    }
+  }
+  return escapeHtml(src.slice(0,180));
+}
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+
+/* ---------- IMPACT ---------- */
+function viewImpact(root){
+  root.innerHTML=`
+    <div class="search-box">
+      <input id="qi" placeholder="Pick a file to predict impact of changing it…"/>
+    </div>
+    <div id="ires" class="results"></div>`;
+  const inp=root.querySelector("#qi"), out=root.querySelector("#ires");
+  const files=state.repo.files;
+  function list(prefix=""){
+    const f=files.filter(x=>x.path.toLowerCase().includes(prefix.toLowerCase())).slice(0,20);
+    out.innerHTML = f.map(x=>`<div class="result" data-p="${x.path}">
+      <div class="p">${x.path}</div>
+      <div class="dim" style="font-size:11px;margin-top:2px">${x.lang} · fan-in ${x.fanIn||0} · risk ${x.risk}</div>
+    </div>`).join("") || `<div class="empty">No files match.</div>`;
+    out.querySelectorAll(".result").forEach(el=>el.onclick=()=>showImpact(el.dataset.p));
+  }
+  inp.addEventListener("input",()=>list(inp.value));
+  list();
+
+  function showImpact(path){
+    const target = files.find(f=>f.path===path); if(!target) return;
+    // walk reverse edges (BFS) to find dependents
+    const rev = {}; state.repo.edges.forEach(([a,b])=>{ (rev[b]||=[]).push(a); });
+    const seen=new Set([path]); const layers=[[path]];
+    for(let d=0;d<3;d++){
+      const next=new Set();
+      for(const p of layers[d]) for(const dep of (rev[p]||[])) if(!seen.has(dep)){ seen.add(dep); next.add(dep); }
+      if(!next.size) break;
+      layers.push([...next]);
+    }
+    const affected=[...seen].filter(p=>p!==path);
+    const risk = Math.min(100, target.risk + affected.length*4 + (target.fanIn||0)*3);
+    const rClass = risk>=70?"bad":risk>=40?"warn":"ok";
+    out.innerHTML=`
+      <div class="result" style="border-color:var(--accent)">
+        <div class="p">${path}</div>
+        <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap">
+          <div><div class="dim" style="font-size:11px">RISK SCORE</div><div style="font-size:28px;font-weight:600" class="risk ${rClass}" style="padding:2px 10px;display:inline-block">${risk}</div></div>
+          <div><div class="dim" style="font-size:11px">DIRECT DEPENDENTS</div><div style="font-size:22px">${(rev[path]||[]).length}</div></div>
+          <div><div class="dim" style="font-size:11px">TOTAL AFFECTED</div><div style="font-size:22px">${affected.length}</div></div>
+          <div><div class="dim" style="font-size:11px">BLAST RADIUS</div><div style="font-size:22px">${layers.length-1} hops</div></div>
+        </div>
+      </div>
+      ${layers.slice(1).map((l,i)=>`
+        <div class="card big" style="margin-top:10px">
+          <div class="card-h"><h4>Layer ${i+1} · ${l.length} files</h4></div>
+          <div class="card-b" style="padding:0"><div class="file-list">
+            ${l.slice(0,30).map(p=>`<div class="fi" data-p="${p}"><span class="path">${p}</span></div>`).join("")}
+          </div></div>
+        </div>`).join("")}
+      <button style="margin-top:10px" id="back">← Pick another file</button>`;
+    out.querySelectorAll(".fi[data-p]").forEach(el=>el.onclick=()=>showImpact(el.dataset.p));
+    out.querySelector("#back").onclick=()=>list();
+  }
+}
+
+/* ---------- CONSTITUTION ---------- */
+function viewConstitution(root){
+  const r=state.repo;
+  const boundaries = Object.values(r.modules).map(m=>({name:m.name, files:m.files, lines:m.lines})).sort((a,b)=>b.lines-a.lines);
+  // ownership map: top folder
+  const own={}; r.files.forEach(f=>{ const t=f.path.split("/")[0]; own[t]=(own[t]||0)+1; });
+  const owners = Object.entries(own).sort((a,b)=>b[1]-a[1]);
+  const blast = [...r.files].sort((a,b)=>(b.fanIn||0)-(a.fanIn||0)).slice(0,8);
+  const dark = r.files.filter(f=>!r.edges.find(e=>e[0]===f.path||e[1]===f.path)).slice(0,10);
+
+  root.innerHTML=`
+  <div class="cons">
+    <div class="card"><h5>Service Boundaries</h5>
+      <ul>${boundaries.slice(0,10).map(b=>`<li><span class="k">${b.name}</span><span class="v">${b.files} files · ${b.lines} lines</span></li>`).join("")}</ul>
+    </div>
+    <div class="card"><h5>Ownership Map (by top folder)</h5>
+      <ul>${owners.slice(0,10).map(([k,v])=>`<li><span class="k">${k}</span><span class="v">${v} files</span></li>`).join("")}</ul>
+    </div>
+    <div class="card"><h5>Blast Radius Index</h5>
+      <ul>${blast.map(f=>`<li><span class="k">${f.path.split("/").pop()}</span><span class="v">fan-in ${f.fanIn||0}</span></li>`).join("")}</ul>
+    </div>
+    <div class="card"><h5>Dark Matter Modules</h5>
+      <div class="dim" style="font-size:11px;margin-bottom:6px">Files with no observed imports either direction — untested, orphaned, or hiding.</div>
+      <ul>${dark.length?dark.map(f=>`<li><span class="k">${f.path}</span></li>`).join(""):`<li><span class="v">None detected.</span></li>`}</ul>
+    </div>
+  </div>`;
+}
+
+/* ---------- AGENTS ---------- */
+function viewAgents(root){
+  root.innerHTML=`<div class="agents">${state.agents.map(a=>`
+    <div class="agent">
+      <div class="h"><div class="ic">${a.icon}</div><h4>${a.name}</h4></div>
+      <p>${a.desc}</p>
+      <div class="status">
+        <span><span class="dot ${a.on?'ok':''}"></span> ${a.on?'Active':'Idle'}</span>
+        <button data-id="${a.id}" class="${a.on?'primary':''}">${a.on?'Analyze':'Activate'}</button>
+      </div>
+    </div>`).join("")}</div>`;
+  root.querySelectorAll("button[data-id]").forEach(b=>b.onclick=()=>{
+    const a=state.agents.find(x=>x.id===b.dataset.id);
+    if(!a.on){ a.on=true; save(); render(); return; }
+    runAgent(a);
   });
 }
-
-/* ---------- Render ---------- */
-function render(){
-  // stats
-  document.getElementById("stRepos").textContent = state.repos.length;
-  document.getElementById("stFiles").textContent = state.filesIndexed.toLocaleString();
-  document.getElementById("stHealth").textContent = state.healthScore;
-  document.getElementById("stAgents").textContent = state.activeAgents;
-  document.getElementById("mFiles").textContent = state.filesIndexed.toLocaleString();
-  document.getElementById("mMods").textContent = state.modulesCount;
-  document.getElementById("mDeps").textContent = state.dependenciesCount;
-  document.getElementById("mIdx").textContent = state.memoryIndex;
-  document.getElementById("sysMem").textContent = state.memoryIndex + "%";
-  // constitution
-  document.getElementById("cBounds").textContent = state.constitution.boundaries;
-  document.getElementById("cOwners").textContent = state.constitution.owners;
-  document.getElementById("cRisk").textContent = state.constitution.risk;
-  document.getElementById("cDark").textContent = state.constitution.dark;
-  // user
-  if(state.user){
-    userBox.innerHTML = `<img src="${state.user.avatar}" alt=""><div class="who"><div>${escapeHtml(state.user.name||state.user.login)}</div><div class="u">@${escapeHtml(state.user.login)}</div></div>`;
-    authBtn.textContent = "Sign Out"; authBtn.classList.remove("btn-primary"); authBtn.classList.add("btn-secondary");
+function runAgent(a){
+  const r=state.repo; let report="";
+  const files=r.files;
+  const match = (re)=>files.filter(f=>re.test(f.path) || re.test((f.content||"").slice(0,4000)));
+  if(a.id==="architect"){
+    const mods = Object.values(r.modules).sort((a,b)=>b.lines-a.lines);
+    report = `Modules ranked by size:\n\n`+mods.slice(0,10).map(m=>`  ${m.name.padEnd(28)} ${String(m.files).padStart(4)} files  ${m.lines} lines`).join("\n")+
+      `\n\nCross-module edges: ${r.edges.filter(([a,b])=>moduleOf(a)!==moduleOf(b)).length}`+
+      `\nHighest-coupling module: ${mods[0]?.name || "n/a"}`;
+  } else if(a.id==="security"){
+    const hits = match(/auth|jwt|password|secret|token|crypto|bcrypt|hash|api[_-]?key|process\.env/i);
+    report = `Security-relevant touchpoints (${hits.length}):\n\n`+hits.slice(0,20).map(f=>`  ${f.path}  (risk ${f.risk})`).join("\n") || "None found.";
+  } else if(a.id==="debug"){
+    const hits = files.filter(f=>/try\s*{|catch\s*\(|throw\s+/.test(f.content||"")).map(f=>({p:f.path, c:((f.content||"").match(/catch\s*\(/g)||[]).length}));
+    report = `Files with error-handling constructs:\n\n`+hits.sort((a,b)=>b.c-a.c).slice(0,15).map(h=>`  ${h.p.padEnd(50)}  ${h.c} catch blocks`).join("\n");
+  } else if(a.id==="infra"){
+    const hits = match(/dockerfile|docker-compose|\.ya?ml$|\.tf$|ci\.ya?ml$|github\/workflows|k8s|helm|nginx|caddy/i);
+    report = `Infra/config artifacts (${hits.length}):\n\n`+hits.slice(0,20).map(f=>`  ${f.path}`).join("\n") || "No infra files detected.";
   } else {
-    userBox.innerHTML = "";
-    authBtn.textContent = "Sign in with GitHub"; authBtn.classList.add("btn-primary"); authBtn.classList.remove("btn-secondary");
+    // onboarding
+    const seeds = [...files].sort((a,b)=>(b.fanIn||0)-(a.fanIn||0)).slice(0,7);
+    report = `Suggested onboarding tour (highest-leverage files):\n\n`+seeds.map((f,i)=>`  ${i+1}. ${f.path}  — fan-in ${f.fanIn||0}, ${f.lines} lines`).join("\n")+
+      `\n\nStart in ${seeds[0]?.path.split("/").slice(0,-1).join("/") || "src/"} — it has the most downstream reach.`;
   }
-  renderRepos();
-  renderAgents();
-  if(canvas) drawGraph();
+  openModal(`${a.name} Report`, `<pre>${escapeHtml(report)}</pre>`);
 }
 
-/* ---------- Utils ---------- */
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function escapeHtml(s){ return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function hash(s){ let h=0; for(let i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; } return Math.abs(h); }
+/* ---------- file modal ---------- */
+function openFile(path){
+  const f = state.repo.files.find(x=>x.path===path);
+  if(!f) return;
+  const rev={}; state.repo.edges.forEach(([a,b])=>{(rev[b]||=[]).push(a)});
+  const html = `
+    <div class="dim" style="font-size:11px;margin-bottom:8px">${f.lang} · ${f.lines} lines · size ${f.size} · risk ${f.risk} · fan-in ${f.fanIn||0} / fan-out ${f.fanOut||0}</div>
+    <div style="margin-bottom:10px"><b>Depends on:</b> ${f.imports.length?f.imports.map(i=>`<span class="chip">${i}</span>`).join(" "):"<span class='dim'>none</span>"}</div>
+    <div style="margin-bottom:10px"><b>Depended on by:</b> ${(rev[path]||[]).slice(0,10).map(p=>`<span class="chip">${p}</span>`).join(" ")||"<span class='dim'>none</span>"}</div>
+    <pre>${escapeHtml((f.content||"[content not stored]").slice(0,4000))}</pre>`;
+  openModal(f.path, html);
+}
+function openModal(title, html){
+  const bg=document.getElementById("modalBg"), m=document.getElementById("modal");
+  m.innerHTML=`<h3>${escapeHtml(title)}</h3>${html}<div style="margin-top:12px;text-align:right"><button id="mc">Close</button></div>`;
+  bg.classList.add("open");
+  m.querySelector("#mc").onclick=()=>bg.classList.remove("open");
+  bg.onclick=e=>{ if(e.target===bg) bg.classList.remove("open"); };
+}
 
-/* ---------- Shortcuts ---------- */
-document.addEventListener("keydown", e=>{
-  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); goto("search"); document.getElementById("searchInput").focus(); }
-  if(e.key==="Escape" && document.activeElement && document.activeElement.blur) document.activeElement.blur();
+/* ---------- keyboard ---------- */
+window.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
+  const map={"1":"dashboard","2":"graph","3":"search","4":"impact","5":"constitution","6":"agents"};
+  if(map[e.key] && state.repo){ go(map[e.key]); }
+  if(e.key==="/" && state.repo){ e.preventDefault(); go("search"); }
 });
 
-/* auto-open app if user was already in */
-if(state.user){ document.getElementById("continueBtn").click(); }
-recompute();
 render();
 </script>
 </body>
