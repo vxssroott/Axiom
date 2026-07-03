@@ -25,7 +25,7 @@ export const Route = createFileRoute("/")({
 function Index() {
   return (
     <iframe
-      src="/axiom.html"
+      src={`/axiom.html?v=${Date.now()}`}
       title="Axiom"
       style={{
         border: "none",
