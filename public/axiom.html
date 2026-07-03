@@ -445,6 +445,7 @@ async function cloneGithub(url){
       }
     }
     const q=[...blobs]; await Promise.all(Array.from({length:CONC},()=>worker(q)));
+    pushRecent(`${owner}/${repo}`, url);
     finalize(`${owner}/${repo}`, files);
   }catch(e){
     setProgress(null); alert("Clone failed: "+(e.message||e));
