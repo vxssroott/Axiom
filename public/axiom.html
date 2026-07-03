@@ -275,20 +275,23 @@ function viewWelcome(root){
     <h1>Engineering Memory Infrastructure</h1>
     <p class="tag">Most tools optimize writing code. Axiom optimizes <em>understanding</em> codebases — locally, in your browser, with nothing sent anywhere.</p>
     <div class="drop" id="drop">
-      <h3>Drop a folder, a ZIP, or paste a public GitHub URL</h3>
-      <div class="dim" style="font-size:12px">Analysis runs entirely in this tab. No login. No upload.</div>
+      <h3>Analyze any codebase — from anywhere</h3>
+      <div class="dim" style="font-size:12px">GitHub · GitLab · Bitbucket · Codeberg · Gitea · any public .zip URL · local folder · pasted snippet. Runs entirely in your browser.</div>
       <div class="row">
-        <input id="ghUrl" placeholder="https://github.com/owner/repo" />
+        <input id="ghUrl" placeholder="Paste any repo or .zip URL — github.com/… · gitlab.com/… · bitbucket.org/… · codeberg.org/… · https://…/archive.zip" />
         <button class="primary" id="btnClone">Analyze</button>
       </div>
-      <div class="row" style="justify-content:center;margin-top:10px">
-        <button id="btnPickDir">Choose Folder</button>
-        <button id="btnPickZip">Upload ZIP</button>
-        <button id="btnDemo">Try Demo Repo</button>
+      <div class="row" style="justify-content:center;margin-top:10px;flex-wrap:wrap">
+        <button id="btnPickDir">📁 Choose Folder</button>
+        <button id="btnPickZip">🗜 Upload ZIP</button>
+        <button id="btnPaste">✍️ Paste Code</button>
+        <button id="btnDemo">✨ Try Demo Repo</button>
         <input type="file" id="fileDir" webkitdirectory directory multiple style="display:none"/>
         <input type="file" id="fileZip" accept=".zip" style="display:none"/>
       </div>
+      <div id="recent" class="row" style="justify-content:center;margin-top:14px;flex-wrap:wrap;gap:6px"></div>
     </div>
+
     <div class="langs">
       ${["JavaScript","TypeScript","Python","Go","Rust","Java","C++","C#","Ruby","PHP","Kotlin","Swift","Scala"].map(l=>`<span class="chip">${l}</span>`).join("")}
     </div>
@@ -326,10 +329,44 @@ function viewWelcome(root){
   };
   root.querySelector("#fileZip").onchange=e=>{ if(e.target.files[0]) ingestZip(e.target.files[0]); };
   root.querySelector("#btnClone").onclick=()=>{
-    const u=root.querySelector("#ghUrl").value.trim(); if(u) cloneGithub(u);
+    const u=root.querySelector("#ghUrl").value.trim(); if(u) analyzeUrl(u);
   };
+  root.querySelector("#ghUrl").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const u=e.target.value.trim(); if(u) analyzeUrl(u); }});
+  root.querySelector("#btnPaste").onclick=()=>openPasteModal();
   root.querySelector("#btnDemo").onclick=()=>loadDemo();
+  renderRecent(root.querySelector("#recent"));
 }
+
+/* ---------- recent repos ---------- */
+function getRecent(){ try{ return JSON.parse(localStorage.getItem("axRecent")||"[]"); }catch{ return []; } }
+function pushRecent(name, source){
+  const list = getRecent().filter(r=>r.name!==name);
+  list.unshift({name, source, at: Date.now()});
+  localStorage.setItem("axRecent", JSON.stringify(list.slice(0,8)));
+}
+function renderRecent(el){
+  if(!el) return;
+  const list = getRecent();
+  if(!list.length){ el.innerHTML=""; return; }
+  el.innerHTML = `<span class="dim" style="font-size:11px;margin-right:4px">Recent:</span>` +
+    list.map(r=>`<button class="chip" data-src="${encodeURIComponent(r.source||r.name)}" style="cursor:pointer">${r.name}</button>`).join("");
+  el.querySelectorAll("button[data-src]").forEach(b=>b.onclick=()=>analyzeUrl(decodeURIComponent(b.dataset.src)));
+}
+
+/* ---------- universal URL router ---------- */
+function analyzeUrl(url){
+  const u = url.trim();
+  if(/\.zip($|\?)/i.test(u)) return cloneZipUrl(u);
+  if(/github\.com\//i.test(u)) return cloneGithub(u);
+  if(/gitlab\.com\//i.test(u)) return cloneGitLab(u);
+  if(/bitbucket\.org\//i.test(u)) return cloneBitbucket(u);
+  if(/codeberg\.org\//i.test(u)) return cloneGitea(u, "https://codeberg.org");
+  if(/gitea\.com\//i.test(u))    return cloneGitea(u, "https://gitea.com");
+  // Bare "owner/repo" → assume GitHub
+  if(/^[\w.-]+\/[\w.-]+$/.test(u)) return cloneGithub("https://github.com/"+u);
+  alert("Unsupported URL. Paste a GitHub / GitLab / Bitbucket / Codeberg / Gitea repo URL, or a direct .zip link.");
+}
+
 
 async function walkEntry(entry, prefix, out){
   if(entry.isFile){
@@ -408,11 +445,179 @@ async function cloneGithub(url){
       }
     }
     const q=[...blobs]; await Promise.all(Array.from({length:CONC},()=>worker(q)));
+    pushRecent(`${owner}/${repo}`, url);
     finalize(`${owner}/${repo}`, files);
   }catch(e){
     setProgress(null); alert("Clone failed: "+(e.message||e));
   }
 }
+
+/* ---------- GitLab (public API) ---------- */
+async function cloneGitLab(url){
+  const m = url.match(/gitlab\.com\/(.+?)(?:$|[?#]|\/-\/|\.git)/i);
+  if(!m){ alert("Enter a valid GitLab repo URL"); return; }
+  const projectPath = m[1].replace(/\/$/,"");
+  setProgress(0.05);
+  try{
+    const id = encodeURIComponent(projectPath);
+    const meta = await fetch(`https://gitlab.com/api/v4/projects/${id}`).then(r=>r.json());
+    if(meta.message) throw new Error(meta.message);
+    const branch = meta.default_branch || "main";
+    setProgress(0.15);
+    // paginated tree
+    let all=[], page=1;
+    while(true){
+      const res = await fetch(`https://gitlab.com/api/v4/projects/${id}/repository/tree?ref=${branch}&recursive=true&per_page=100&page=${page}`);
+      const arr = await res.json(); if(!Array.isArray(arr)||!arr.length) break;
+      all = all.concat(arr);
+      if(arr.length<100 || page>=20) break; page++;
+    }
+    const blobs = all.filter(t=>t.type==="blob" && !SKIP.test(t.path) && CODE_EXT.test(t.path)).slice(0,400);
+    const files=[]; let done=0; const CONC=6;
+    async function worker(q){
+      while(q.length){
+        const b=q.shift();
+        try{
+          const txt = await fetch(`https://gitlab.com/api/v4/projects/${id}/repository/files/${encodeURIComponent(b.path)}/raw?ref=${branch}`).then(r=>r.text());
+          files.push(mkFile(b.path, txt));
+        }catch(_){}
+        done++; setProgress(0.2 + 0.6*done/blobs.length);
+      }
+    }
+    const q=[...blobs]; await Promise.all(Array.from({length:CONC},()=>worker(q)));
+    const name = projectPath;
+    pushRecent(name, url);
+    finalize(name, files);
+  }catch(e){ setProgress(null); alert("GitLab clone failed: "+(e.message||e)); }
+}
+
+/* ---------- Bitbucket (public API) ---------- */
+async function cloneBitbucket(url){
+  const m = url.match(/bitbucket\.org\/([^\/\s]+)\/([^\/\s#?]+)/i);
+  if(!m){ alert("Enter a valid Bitbucket repo URL"); return; }
+  const owner=m[1], repo=m[2].replace(/\.git$/,"");
+  setProgress(0.05);
+  try{
+    const meta = await fetch(`https://api.bitbucket.org/2.0/repositories/${owner}/${repo}`).then(r=>r.json());
+    if(meta.type==="error") throw new Error(meta.error?.message || "Not found");
+    const branch = meta.mainbranch?.name || "main";
+    setProgress(0.15);
+    // recursive src listing
+    let all=[], next=`https://api.bitbucket.org/2.0/repositories/${owner}/${repo}/src/${branch}/?max_depth=8&pagelen=100`;
+    let pages=0;
+    while(next && pages<20){
+      const r = await fetch(next); const j = await r.json();
+      (j.values||[]).forEach(v=>{ if(v.type==="commit_file") all.push(v.path); });
+      next = j.next; pages++;
+    }
+    const paths = all.filter(p=>!SKIP.test(p) && CODE_EXT.test(p)).slice(0,300);
+    const files=[]; let done=0; const CONC=6;
+    async function worker(q){
+      while(q.length){
+        const p=q.shift();
+        try{
+          const txt = await fetch(`https://api.bitbucket.org/2.0/repositories/${owner}/${repo}/src/${branch}/${p}`).then(r=>r.text());
+          files.push(mkFile(p, txt));
+        }catch(_){}
+        done++; setProgress(0.2 + 0.6*done/paths.length);
+      }
+    }
+    const q=[...paths]; await Promise.all(Array.from({length:CONC},()=>worker(q)));
+    const name=`${owner}/${repo}`; pushRecent(name, url); finalize(name, files);
+  }catch(e){ setProgress(null); alert("Bitbucket clone failed: "+(e.message||e)); }
+}
+
+/* ---------- Gitea / Codeberg (public API) ---------- */
+async function cloneGitea(url, base){
+  const m = url.match(new RegExp(base.replace(/[.\/]/g,"\\$&")+"\\/([^\\/\\s]+)\\/([^\\/\\s#?]+)","i"));
+  if(!m){ alert("Enter a valid repo URL"); return; }
+  const owner=m[1], repo=m[2].replace(/\.git$/,"");
+  setProgress(0.05);
+  try{
+    const meta = await fetch(`${base}/api/v1/repos/${owner}/${repo}`).then(r=>r.json());
+    const branch = meta.default_branch || "main";
+    setProgress(0.15);
+    const tree = await fetch(`${base}/api/v1/repos/${owner}/${repo}/git/trees/${branch}?recursive=true&per_page=1000`).then(r=>r.json());
+    const blobs = (tree.tree||[]).filter(t=>t.type==="blob" && !SKIP.test(t.path) && CODE_EXT.test(t.path)).slice(0,400);
+    const files=[]; let done=0; const CONC=6;
+    async function worker(q){
+      while(q.length){
+        const b=q.shift();
+        try{
+          const txt = await fetch(`${base}/${owner}/${repo}/raw/branch/${branch}/${b.path}`).then(r=>r.text());
+          files.push(mkFile(b.path, txt));
+        }catch(_){}
+        done++; setProgress(0.2 + 0.6*done/blobs.length);
+      }
+    }
+    const q=[...blobs]; await Promise.all(Array.from({length:CONC},()=>worker(q)));
+    const name=`${owner}/${repo}`; pushRecent(name, url); finalize(name, files);
+  }catch(e){ setProgress(null); alert("Clone failed: "+(e.message||e)); }
+}
+
+/* ---------- Any public .zip URL ---------- */
+async function cloneZipUrl(url){
+  setProgress(0.05);
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const blob = await res.blob();
+    const file = new File([blob], (url.split("/").pop()||"archive.zip"));
+    pushRecent(file.name.replace(/\.zip$/i,""), url);
+    return ingestZip(file);
+  }catch(e){
+    setProgress(null);
+    alert("ZIP fetch failed: "+(e.message||e)+"\n\nSome hosts block cross-origin downloads (CORS). Download the ZIP and use 'Upload ZIP' instead.");
+  }
+}
+
+/* ---------- Paste-code modal ---------- */
+function openPasteModal(){
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px";
+  wrap.innerHTML = `
+    <div style="background:var(--bg-2,#12121a);border:1px solid var(--border,#2a2a35);border-radius:12px;max-width:760px;width:100%;padding:20px;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin:0">Paste Code Snippets</h3>
+        <button id="pxClose">✕</button>
+      </div>
+      <div class="dim" style="font-size:12px">One file per block. Start each block with <code>=== path/to/file.ext ===</code>. Or paste a single snippet and we'll treat it as <code>snippet.txt</code>.</div>
+      <textarea id="pxArea" style="width:100%;height:320px;background:#0a0a12;color:#e6e6f0;border:1px solid var(--border,#2a2a35);border-radius:8px;padding:12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px" placeholder="=== src/index.ts ===
+export const hi = () => 'hello'
+
+=== src/util.ts ===
+export const add = (a,b)=>a+b"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="pxCancel">Cancel</button>
+        <button class="primary" id="pxGo">Analyze</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  wrap.querySelector("#pxClose").onclick=close;
+  wrap.querySelector("#pxCancel").onclick=close;
+  wrap.addEventListener("click",e=>{ if(e.target===wrap) close(); });
+  wrap.querySelector("#pxGo").onclick=()=>{
+    const txt = wrap.querySelector("#pxArea").value;
+    if(!txt.trim()) return;
+    const files=[];
+    if(/^===\s+.+\s+===/m.test(txt)){
+      const parts = txt.split(/^===\s+(.+?)\s+===\s*$/m);
+      for(let i=1;i<parts.length;i+=2){
+        const path = parts[i].trim(); const body=(parts[i+1]||"").replace(/^\n/,"");
+        if(path) files.push(mkFile(path, body));
+      }
+    } else {
+      files.push(mkFile("snippet.txt", txt));
+    }
+    close();
+    if(!files.length){ alert("No files parsed."); return; }
+    pushRecent("pasted-snippet", "paste://"+Date.now());
+    finalize("pasted-snippet", files);
+  };
+}
+
+
 
 function loadDemo(){
   const demo = [
@@ -501,6 +706,8 @@ function buildGraph(files){
 }
 
 function finalize(name, files){
+  try{ pushRecent(name, name); }catch(_){}
+
   setProgress(0.85);
   const {edges, modules, fanIn} = buildGraph(files);
   const health = computeHealth(files, edges);
