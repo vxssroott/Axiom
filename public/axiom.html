@@ -908,7 +908,7 @@ function viewAgents(root){
   });
 }
 function runAgent(a){
-  const r=state.repo; let report="";
+  const r=state.repo; let report=""; let html=null;
   const files=r.files;
   const match = (re)=>files.filter(f=>re.test(f.path) || re.test((f.content||"").slice(0,4000)));
   if(a.id==="architect"){
@@ -918,7 +918,32 @@ function runAgent(a){
       `\nHighest-coupling module: ${mods[0]?.name || "n/a"}`;
   } else if(a.id==="security"){
     const hits = match(/auth|jwt|password|secret|token|crypto|bcrypt|hash|api[_-]?key|process\.env/i);
-    report = `Security-relevant touchpoints (${hits.length}):\n\n`+hits.slice(0,20).map(f=>`  ${f.path}  (risk ${f.risk})`).join("\n") || "None found.";
+    if(!hits.length){
+      html = `<div class="dim">No security-relevant touchpoints found.</div>`;
+    } else {
+      const rev={}; r.edges.forEach(([x,y])=>{(rev[y]||=[]).push(x)});
+      const rows = hits.slice(0,20).map(f=>{
+        const deps=(rev[f.path]||[]).length;
+        const riskLevel = f.risk>=70?"Critical":f.risk>=40?"Semi-Risk":"Low";
+        const rClass = f.risk>=70?"bad":f.risk>=40?"warn":"ok";
+        const effort = estimateEffort(1+deps, deps);
+        const owner = suggestOwner(f.path);
+        const rec = "Review authentication/secret handling; ensure inputs are validated and secrets are not logged or committed.";
+        const ticket = buildTicket({riskLabel:riskLevel, riskLevel, file:f.path, effort, files:[f.path], services:[f.path.split("/")[0]], recommendation:rec, owner, kind:"a security-sensitive touchpoint"});
+        const tid="tk_sec_"+Math.random().toString(36).slice(2,8);
+        window.__axTickets[tid]=ticket;
+        return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            <div><b>${escapeHtml(f.path)}</b> <span class="risk ${rClass}" style="padding:1px 8px;border-radius:4px;font-size:11px;margin-left:6px">${riskLevel} · ${f.risk}</span></div>
+            <div style="font-size:12px"><span class="dim">Effort:</span> <span class="risk ${effort.color}" style="padding:1px 8px;border-radius:4px">${effort.emoji} ${effort.level} · ${effort.hours}</span></div>
+          </div>
+          <div style="margin-top:6px;font-size:12px;color:var(--ink-dim)">Suggested Reviewer: <b>${owner}</b>
+            <button class="primary" style="float:right" onclick="__axCopyTicket('${tid}')">📋 Copy Ticket Draft</button>
+          </div>
+        </div>`;
+      }).join("");
+      html = `<div class="dim" style="margin-bottom:10px">Security-relevant touchpoints (${hits.length}):</div>${rows}`;
+    }
   } else if(a.id==="debug"){
     const hits = files.filter(f=>/try\s*{|catch\s*\(|throw\s+/.test(f.content||"")).map(f=>({p:f.path, c:((f.content||"").match(/catch\s*\(/g)||[]).length}));
     report = `Files with error-handling constructs:\n\n`+hits.sort((a,b)=>b.c-a.c).slice(0,15).map(h=>`  ${h.p.padEnd(50)}  ${h.c} catch blocks`).join("\n");
@@ -926,13 +951,13 @@ function runAgent(a){
     const hits = match(/dockerfile|docker-compose|\.ya?ml$|\.tf$|ci\.ya?ml$|github\/workflows|k8s|helm|nginx|caddy/i);
     report = `Infra/config artifacts (${hits.length}):\n\n`+hits.slice(0,20).map(f=>`  ${f.path}`).join("\n") || "No infra files detected.";
   } else {
-    // onboarding
     const seeds = [...files].sort((a,b)=>(b.fanIn||0)-(a.fanIn||0)).slice(0,7);
     report = `Suggested onboarding tour (highest-leverage files):\n\n`+seeds.map((f,i)=>`  ${i+1}. ${f.path}  — fan-in ${f.fanIn||0}, ${f.lines} lines`).join("\n")+
       `\n\nStart in ${seeds[0]?.path.split("/").slice(0,-1).join("/") || "src/"} — it has the most downstream reach.`;
   }
-  openModal(`${a.name} Report`, `<pre>${escapeHtml(report)}</pre>`);
+  openModal(`${a.name} Report`, html!==null ? html : `<pre>${escapeHtml(report)}</pre>`);
 }
+
 
 /* ---------- file modal ---------- */
 function openFile(path){
