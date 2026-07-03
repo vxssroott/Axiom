@@ -275,20 +275,23 @@ function viewWelcome(root){
     <h1>Engineering Memory Infrastructure</h1>
     <p class="tag">Most tools optimize writing code. Axiom optimizes <em>understanding</em> codebases — locally, in your browser, with nothing sent anywhere.</p>
     <div class="drop" id="drop">
-      <h3>Drop a folder, a ZIP, or paste a public GitHub URL</h3>
-      <div class="dim" style="font-size:12px">Analysis runs entirely in this tab. No login. No upload.</div>
+      <h3>Analyze any codebase — from anywhere</h3>
+      <div class="dim" style="font-size:12px">GitHub · GitLab · Bitbucket · Codeberg · Gitea · any public .zip URL · local folder · pasted snippet. Runs entirely in your browser.</div>
       <div class="row">
-        <input id="ghUrl" placeholder="https://github.com/owner/repo" />
+        <input id="ghUrl" placeholder="Paste any repo or .zip URL — github.com/… · gitlab.com/… · bitbucket.org/… · codeberg.org/… · https://…/archive.zip" />
         <button class="primary" id="btnClone">Analyze</button>
       </div>
-      <div class="row" style="justify-content:center;margin-top:10px">
-        <button id="btnPickDir">Choose Folder</button>
-        <button id="btnPickZip">Upload ZIP</button>
-        <button id="btnDemo">Try Demo Repo</button>
+      <div class="row" style="justify-content:center;margin-top:10px;flex-wrap:wrap">
+        <button id="btnPickDir">📁 Choose Folder</button>
+        <button id="btnPickZip">🗜 Upload ZIP</button>
+        <button id="btnPaste">✍️ Paste Code</button>
+        <button id="btnDemo">✨ Try Demo Repo</button>
         <input type="file" id="fileDir" webkitdirectory directory multiple style="display:none"/>
         <input type="file" id="fileZip" accept=".zip" style="display:none"/>
       </div>
+      <div id="recent" class="row" style="justify-content:center;margin-top:14px;flex-wrap:wrap;gap:6px"></div>
     </div>
+
     <div class="langs">
       ${["JavaScript","TypeScript","Python","Go","Rust","Java","C++","C#","Ruby","PHP","Kotlin","Swift","Scala"].map(l=>`<span class="chip">${l}</span>`).join("")}
     </div>
