@@ -705,6 +705,8 @@ function buildGraph(files){
 }
 
 function finalize(name, files){
+  try{ pushRecent(name, name); }catch(_){}
+
   setProgress(0.85);
   const {edges, modules, fanIn} = buildGraph(files);
   const health = computeHealth(files, edges);
