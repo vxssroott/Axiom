@@ -329,10 +329,44 @@ function viewWelcome(root){
   };
   root.querySelector("#fileZip").onchange=e=>{ if(e.target.files[0]) ingestZip(e.target.files[0]); };
   root.querySelector("#btnClone").onclick=()=>{
-    const u=root.querySelector("#ghUrl").value.trim(); if(u) cloneGithub(u);
+    const u=root.querySelector("#ghUrl").value.trim(); if(u) analyzeUrl(u);
   };
+  root.querySelector("#ghUrl").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const u=e.target.value.trim(); if(u) analyzeUrl(u); }});
+  root.querySelector("#btnPaste").onclick=()=>openPasteModal();
   root.querySelector("#btnDemo").onclick=()=>loadDemo();
+  renderRecent(root.querySelector("#recent"));
 }
+
+/* ---------- recent repos ---------- */
+function getRecent(){ try{ return JSON.parse(localStorage.getItem("axRecent")||"[]"); }catch{ return []; } }
+function pushRecent(name, source){
+  const list = getRecent().filter(r=>r.name!==name);
+  list.unshift({name, source, at: Date.now()});
+  localStorage.setItem("axRecent", JSON.stringify(list.slice(0,8)));
+}
+function renderRecent(el){
+  if(!el) return;
+  const list = getRecent();
+  if(!list.length){ el.innerHTML=""; return; }
+  el.innerHTML = `<span class="dim" style="font-size:11px;margin-right:4px">Recent:</span>` +
+    list.map(r=>`<button class="chip" data-src="${encodeURIComponent(r.source||r.name)}" style="cursor:pointer">${r.name}</button>`).join("");
+  el.querySelectorAll("button[data-src]").forEach(b=>b.onclick=()=>analyzeUrl(decodeURIComponent(b.dataset.src)));
+}
+
+/* ---------- universal URL router ---------- */
+function analyzeUrl(url){
+  const u = url.trim();
+  if(/\.zip($|\?)/i.test(u)) return cloneZipUrl(u);
+  if(/github\.com\//i.test(u)) return cloneGithub(u);
+  if(/gitlab\.com\//i.test(u)) return cloneGitLab(u);
+  if(/bitbucket\.org\//i.test(u)) return cloneBitbucket(u);
+  if(/codeberg\.org\//i.test(u)) return cloneGitea(u, "https://codeberg.org");
+  if(/gitea\.com\//i.test(u))    return cloneGitea(u, "https://gitea.com");
+  // Bare "owner/repo" → assume GitHub
+  if(/^[\w.-]+\/[\w.-]+$/.test(u)) return cloneGithub("https://github.com/"+u);
+  alert("Unsupported URL. Paste a GitHub / GitLab / Bitbucket / Codeberg / Gitea repo URL, or a direct .zip link.");
+}
+
 
 async function walkEntry(entry, prefix, out){
   if(entry.isFile){
