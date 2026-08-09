@@ -163,8 +163,11 @@
     <header class="top">
       <div class="crumbs" id="crumbs">Welcome</div>
       <div class="spacer"></div>
+      <span id="liveBadge" style="display:none;align-items:center;gap:6px;font-size:11px;border:1px solid #ef4444;color:#fca5a5;border-radius:999px;padding:3px 10px;margin-right:8px"><span style="width:7px;height:7px;border-radius:50%;background:#ef4444;display:inline-block;animation:axpulse 1.2s infinite"></span>LIVE</span>
+      <button id="btnPalette" title="Command palette (⌘K)" style="margin-right:8px">⌘K</button>
       <div class="chip" id="repoChip" style="display:none"><span class="dot ok"></span><span id="repoName">—</span></div>
       <button id="btnReset" style="display:none">Reset</button>
+
     </header>
     <div class="progress" id="prog" style="display:none"><div class="b" id="progB" style="width:0%"></div></div>
     <div class="view" id="view"></div>
