@@ -213,7 +213,7 @@ function load(){
     const raw = localStorage.getItem(LS); if(!raw) return;
     const d = JSON.parse(raw);
     if(d.repo) state.repo = d.repo;
-    if(d.agents) state.agents = d.agents;
+    if(d.agents) state.agents = state.agents.map(a=>{ const s=d.agents.find(x=>x.id===a.id); return s?{...a,on:!!s.on}:a; });
   }catch(e){}
 }
 load();
