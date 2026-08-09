@@ -344,6 +344,8 @@ function viewWelcome(root){
   };
   root.querySelector("#ghUrl").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const u=e.target.value.trim(); if(u) analyzeUrl(u); }});
   root.querySelector("#btnPaste").onclick=()=>openPasteModal();
+  root.querySelector("#btnLive").onclick=()=>startLiveWatch();
+
   root.querySelector("#btnDemo").onclick=()=>loadDemo();
   renderRecent(root.querySelector("#recent"));
 }
