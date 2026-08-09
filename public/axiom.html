@@ -778,91 +778,168 @@ function langColor(l){
 
 /* ---------- GRAPH ---------- */
 function viewGraph(root){
-  root.innerHTML = `<div class="graph-wrap"><canvas id="graph"></canvas>
+  root.innerHTML = `<div class="graph-wrap"><canvas id="graph" style="cursor:grab"></canvas>
+    <div style="position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:rgba(13,16,22,.9);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+      <input id="gq" placeholder="Filter modules…" style="background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:5px 8px;font-size:12px;width:150px"/>
+      <label class="dim" style="font-size:11px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="gIso" checked/> isolated</label>
+      <label class="dim" style="font-size:11px;display:flex;gap:4px;align-items:center">spread <input type="range" id="gSpread" min="0" max="100" value="45" style="width:80px"/></label>
+      <button id="gFit" style="font-size:11px;padding:4px 8px">Fit</button>
+    </div>
     <div class="graph-legend" id="legend"></div>
-    <div class="node-info" id="nodeInfo" style="display:none"></div></div>`;
+    <div class="node-info" id="nodeInfo" style="display:none"></div>
+    <div class="dim" style="position:absolute;bottom:12px;right:12px;font-size:11px;background:rgba(13,16,22,.85);border:1px solid var(--line);border-radius:8px;padding:6px 9px">drag node · drag canvas to pan · scroll to zoom · click node to inspect</div>
+  </div>`;
   const wrap=root.querySelector(".graph-wrap"), cv=root.querySelector("#graph");
   const ctx=cv.getContext("2d");
   function resize(){ cv.width=wrap.clientWidth*devicePixelRatio; cv.height=wrap.clientHeight*devicePixelRatio; cv.style.width=wrap.clientWidth+"px"; cv.style.height=wrap.clientHeight+"px"; ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
   resize(); window.addEventListener("resize",resize);
 
   const mods = Object.values(state.repo.modules);
-  const nodes = mods.map((m,i)=>({id:m.name, size:Math.min(50, 10+Math.sqrt(m.lines)/2), files:m.files, lines:m.lines, langs:m.langs, x:0,y:0,vx:0,vy:0}));
+  const nodes = mods.map((m,i)=>({id:m.name, size:Math.min(46, 9+Math.sqrt(m.lines)/2.2), files:m.files, lines:m.lines, langs:m.langs, x:0,y:0,vx:0,vy:0,deg:0,comp:0,cx:0,cy:0}));
   const idx={}; nodes.forEach((n,i)=>idx[n.id]=i);
-  const links=[];
-  const seen=new Set();
+  const links=[]; const seen=new Set(); const adj=nodes.map(()=>[]);
   for(const [a,b] of state.repo.edges){
     const ma=moduleOf(a), mb=moduleOf(b);
     if(ma===mb) continue;
     const k=ma+"|"+mb; if(seen.has(k)) continue; seen.add(k);
-    if(idx[ma]!=null && idx[mb]!=null) links.push({s:idx[ma],t:idx[mb]});
+    if(idx[ma]!=null && idx[mb]!=null){
+      const s=idx[ma], t=idx[mb];
+      links.push({s,t,w:1}); nodes[s].deg++; nodes[t].deg++; adj[s].push(t); adj[t].push(s);
+    }
   }
-  // init positions
-  nodes.forEach((n,i)=>{ const a=i/nodes.length*Math.PI*2; n.x=wrap.clientWidth/2+Math.cos(a)*180; n.y=wrap.clientHeight/2+Math.sin(a)*180; });
+  // connected components — clusters live apart, joined only where the web connects them
+  const comp=new Array(nodes.length).fill(-1); let nc=0;
+  for(let i=0;i<nodes.length;i++){
+    if(comp[i]!==-1) continue;
+    const q=[i]; comp[i]=nc;
+    while(q.length){ const v=q.pop(); for(const u of adj[v]) if(comp[u]===-1){ comp[u]=nc; q.push(u); } }
+    nc++;
+  }
+  nodes.forEach((n,i)=>n.comp=comp[i]);
+  const compSize={}; comp.forEach(c=>compSize[c]=(compSize[c]||0)+1);
+  const order = Object.keys(compSize).map(Number).sort((a,b)=>compSize[b]-compSize[a]);
+  const rank={}; order.forEach((c,i)=>rank[c]=i);
+  let spread = 45;
+  function layoutCenters(){
+    const cols=Math.max(1,Math.ceil(Math.sqrt(order.length)));
+    const gap = 260 + spread*7;
+    order.forEach((c,i)=>{
+      const r=Math.floor(i/cols), col=i%cols;
+      const cx=(col-(cols-1)/2)*gap, cy=(r-(Math.ceil(order.length/cols)-1)/2)*gap;
+      nodes.forEach(n=>{ if(n.comp===c){ n.cx=cx; n.cy=cy; } });
+    });
+  }
+  layoutCenters();
+  nodes.forEach((n,i)=>{ const a=i*2.399; n.x=n.cx+Math.cos(a)*(40+Math.sqrt(compSize[n.comp])*22); n.y=n.cy+Math.sin(a)*(40+Math.sqrt(compSize[n.comp])*22); });
 
-  let hover=null, dragging=null, off={x:0,y:0};
+  // view transform (world -> screen)
+  const view={k:1,x:wrap.clientWidth/2,y:wrap.clientHeight/2};
+  let hover=null, dragging=null, panning=null, off={x:0,y:0}, filter="", showIso=true, selected=null;
+  const visible=n=>(showIso||n.deg>0)&&(!filter||n.id.toLowerCase().includes(filter));
+  const toWorld=(sx,sy)=>({x:(sx-view.x)/view.k, y:(sy-view.y)/view.k});
+
+  cv.addEventListener("wheel",e=>{ e.preventDefault(); const r=cv.getBoundingClientRect(); const mx=e.clientX-r.left,my=e.clientY-r.top; const w=toWorld(mx,my); const k=Math.min(3,Math.max(.15, view.k*(e.deltaY<0?1.12:1/1.12))); view.k=k; view.x=mx-w.x*k; view.y=my-w.y*k; },{passive:false});
   cv.addEventListener("mousemove",e=>{
-    const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
-    if(dragging){ dragging.x=x-off.x; dragging.y=y-off.y; dragging.vx=dragging.vy=0; return; }
-    hover=nodes.find(n=>Math.hypot(n.x-x,n.y-y) < n.size);
-    if(hover){ showInfo(hover); } else hideInfo();
+    const r=cv.getBoundingClientRect(); const sx=e.clientX-r.left, sy=e.clientY-r.top; const w=toWorld(sx,sy);
+    if(dragging){ dragging.x=w.x-off.x; dragging.y=w.y-off.y; dragging.vx=dragging.vy=0; return; }
+    if(panning){ view.x=sx-panning.x; view.y=sy-panning.y; return; }
+    hover=nodes.filter(visible).find(n=>Math.hypot(n.x-w.x,n.y-w.y) < n.size+4) || null;
+    cv.style.cursor = hover?"pointer":"grab";
+    if(hover) showInfo(hover); else if(selected) showInfo(selected); else hideInfo();
   });
-  cv.addEventListener("mousedown",e=>{ if(hover){ dragging=hover; const r=cv.getBoundingClientRect(); off.x=e.clientX-r.left-hover.x; off.y=e.clientY-r.top-hover.y; }});
-  window.addEventListener("mouseup",()=>dragging=null);
+  cv.addEventListener("mousedown",e=>{
+    const r=cv.getBoundingClientRect(); const sx=e.clientX-r.left, sy=e.clientY-r.top; const w=toWorld(sx,sy);
+    if(hover){ dragging=hover; off.x=w.x-hover.x; off.y=w.y-hover.y; }
+    else { panning={x:sx-view.x,y:sy-view.y}; cv.style.cursor="grabbing"; }
+  });
+  window.addEventListener("mouseup",()=>{ dragging=null; panning=null; });
+  cv.addEventListener("click",()=>{ if(hover){ selected=hover; showInfo(hover); } else { selected=null; hideInfo(); } });
+
+  root.querySelector("#gq").oninput=e=>{ filter=e.target.value.trim().toLowerCase(); };
+  root.querySelector("#gIso").onchange=e=>{ showIso=e.target.checked; };
+  root.querySelector("#gSpread").oninput=e=>{ spread=+e.target.value; layoutCenters(); };
+  root.querySelector("#gFit").onclick=()=>fit();
+  function fit(){
+    const vis=nodes.filter(visible); if(!vis.length) return;
+    const xs=vis.map(n=>n.x), ys=vis.map(n=>n.y);
+    const minX=Math.min(...xs)-80,maxX=Math.max(...xs)+80,minY=Math.min(...ys)-80,maxY=Math.max(...ys)+80;
+    const k=Math.min(wrap.clientWidth/(maxX-minX), wrap.clientHeight/(maxY-minY), 2);
+    view.k=Math.max(.12,k); view.x=wrap.clientWidth/2-((minX+maxX)/2)*view.k; view.y=wrap.clientHeight/2-((minY+maxY)/2)*view.k;
+  }
+  setTimeout(fit, 700);
 
   function showInfo(n){
     const el=document.getElementById("nodeInfo"); if(!el) return;
+    const peers=adj[idx[n.id]].map(i=>nodes[i].id);
     el.style.display="";
     el.innerHTML=`<div style="font-weight:600;margin-bottom:6px">${n.id}</div>
-      <div class="dim">${n.files} files · ${n.lines} lines</div>
+      <div class="dim">${n.files} files · ${n.lines} lines · ${n.deg} connections</div>
+      <div class="dim" style="margin-top:4px">cluster #${rank[n.comp]+1} (${compSize[n.comp]} module${compSize[n.comp]>1?"s":""})${n.deg?"":" · isolated"}</div>
       <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">
         ${Object.entries(n.langs).map(([l,c])=>`<span class="chip"><span class="lg-dot" style="background:${langColor(l)}"></span>${l}·${c}</span>`).join("")}
-      </div>`;
+      </div>
+      ${peers.length?`<div style="margin-top:8px"><b style="font-size:11px">Connected to</b><div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">${peers.slice(0,8).map(p=>`<span class="chip">${p}</span>`).join("")}</div></div>`:""}`;
   }
   function hideInfo(){ const el=document.getElementById("nodeInfo"); if(el) el.style.display="none"; }
 
   const legend=document.getElementById("legend");
-  legend.innerHTML = Object.entries({JavaScript:1,TypeScript:1,Python:1,Go:1,Other:1}).map(([l])=>`<span><span class="lg-dot" style="background:${langColor(l)}"></span>${l}</span>`).join("");
+  legend.innerHTML = ["JavaScript","TypeScript","Python","Go","Other"].map(l=>`<span><span class="lg-dot" style="background:${langColor(l)}"></span>${l}</span>`).join("")
+    + `<span class="dim">${nc} cluster${nc>1?"s":""} · ${links.length} links</span>`;
 
   function step(){
-    // force-directed
-    const W=wrap.clientWidth, H=wrap.clientHeight, cx=W/2, cy=H/2;
-    for(let i=0;i<nodes.length;i++){
-      const a=nodes[i];
-      for(let j=i+1;j<nodes.length;j++){
-        const b=nodes[j]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||.01;
-        const rep = 4000/(d*d); dx/=d; dy/=d;
-        a.vx-=dx*rep*.001; a.vy-=dy*rep*.001;
-        b.vx+=dx*rep*.001; b.vy+=dy*rep*.001;
+    const vis=nodes.filter(visible);
+    for(let i=0;i<vis.length;i++){
+      const a=vis[i];
+      for(let j=i+1;j<vis.length;j++){
+        const b=vis[j]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||.01;
+        const sameComp = a.comp===b.comp;
+        const strength = sameComp ? 26000 : 90000;
+        const rep = Math.min(9, strength/(d*d)); dx/=d; dy/=d;
+        a.vx-=dx*rep*.02; a.vy-=dy*rep*.02;
+        b.vx+=dx*rep*.02; b.vy+=dy*rep*.02;
       }
-      // center gravity
-      a.vx += (cx-a.x)*.0008; a.vy += (cy-a.y)*.0008;
+      // pull toward this node's own cluster centre, never a global centre
+      a.vx += (a.cx-a.x)*.006; a.vy += (a.cy-a.y)*.006;
     }
     for(const l of links){
       const a=nodes[l.s], b=nodes[l.t];
+      if(!visible(a)||!visible(b)) continue;
       const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||.01;
-      const target=120, k=(d-target)*.02;
+      const target=130+ (a.size+b.size), k=(d-target)*.014;
       const ux=dx/d, uy=dy/d;
       a.vx+=ux*k; a.vy+=uy*k; b.vx-=ux*k; b.vy-=uy*k;
     }
-    for(const n of nodes){ if(n===dragging) continue; n.vx*=.85; n.vy*=.85; n.x+=n.vx; n.y+=n.vy; }
+    for(const n of vis){ if(n===dragging) continue; n.vx*=.86; n.vy*=.86; n.x+=Math.max(-12,Math.min(12,n.vx)); n.y+=Math.max(-12,Math.min(12,n.vy)); }
 
+    const W=wrap.clientWidth, H=wrap.clientHeight;
     ctx.clearRect(0,0,W,H);
-    // edges
-    ctx.strokeStyle="rgba(125,211,252,.15)"; ctx.lineWidth=1;
-    for(const l of links){ const a=nodes[l.s], b=nodes[l.t]; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
-    // nodes
-    for(const n of nodes){
+    ctx.save(); ctx.translate(view.x,view.y); ctx.scale(view.k,view.k);
+    const focus = hover||selected;
+    const near = focus ? new Set([idx[focus.id], ...adj[idx[focus.id]]]) : null;
+    for(const l of links){
+      const a=nodes[l.s], b=nodes[l.t]; if(!visible(a)||!visible(b)) continue;
+      const lit = near && (near.has(l.s)&&near.has(l.t));
+      ctx.strokeStyle= lit?"rgba(125,211,252,.75)":(near?"rgba(125,211,252,.06)":"rgba(125,211,252,.18)");
+      ctx.lineWidth=(lit?2:1)/view.k;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+    for(const n of vis){
+      const i=idx[n.id];
+      const dim = near && !near.has(i);
       const topLang = Object.entries(n.langs).sort((a,b)=>b[1]-a[1])[0]?.[0]||"Other";
       const c = langColor(topLang);
+      ctx.globalAlpha = dim?.25:1;
       ctx.beginPath(); ctx.arc(n.x,n.y,n.size,0,Math.PI*2);
       const g=ctx.createRadialGradient(n.x,n.y,1,n.x,n.y,n.size);
       g.addColorStop(0,c); g.addColorStop(1,"#0f1420");
       ctx.fillStyle=g; ctx.fill();
-      ctx.strokeStyle= n===hover?"#7dd3fc":"rgba(255,255,255,.15)"; ctx.lineWidth= n===hover?2:1; ctx.stroke();
-      ctx.fillStyle="#e6ebf2"; ctx.font="11px "+getComputedStyle(document.body).fontFamily;
+      ctx.strokeStyle= n===focus?"#7dd3fc":(n.deg===0?"rgba(255,255,255,.10)":"rgba(255,255,255,.18)");
+      ctx.setLineDash(n.deg===0?[4,4]:[]); ctx.lineWidth=(n===focus?2.5:1)/view.k; ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle="#e6ebf2"; ctx.font=(11/view.k<7?7*view.k:11)+"px "+getComputedStyle(document.body).fontFamily;
       ctx.textAlign="center"; ctx.fillText(n.id, n.x, n.y+n.size+12);
+      ctx.globalAlpha=1;
     }
+    ctx.restore();
     if(state.route==="graph") requestAnimationFrame(step);
   }
   step();
