@@ -1545,7 +1545,7 @@ async function livePoll(){
   let items=[], sel=0;
   function commands(){
     const c=routes.filter(r=>r.id!=="welcome"||!state.repo).map(r=>({label:r.label, hint:"View", run:()=>go(r.id)}));
-    c.push({label:"Run all agents", hint:"Action", run:()=>{ go("agents"); setTimeout(()=>window.__axRunAll&&window.__axRunAll(),50); }});
+    c.push({label:"Run all agents", hint:"Action", run:()=>{ go("agents"); setTimeout(()=>document.getElementById("runAll")?.click(),60); }});
     c.push({label:"Export findings (.md)", hint:"Action", run:()=>state.repo&&window.__axExportFindings()});
     c.push({label:"Export snapshot (.json)", hint:"Action", run:exportSnapshot});
     c.push({label:"Import snapshot (.json)", hint:"Action", run:importSnapshot});
