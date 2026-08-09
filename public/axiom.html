@@ -1175,71 +1175,244 @@ function viewConstitution(root){
 }
 
 /* ---------- AGENTS ---------- */
+window.__axAgentRuns = window.__axAgentRuns || {};
 function viewAgents(root){
-  root.innerHTML=`<div class="agents">${state.agents.map(a=>`
+  root.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+    <div class="dim" style="font-size:12px">Seven analysts read your codebase locally. Activate one, or sweep the whole repo at once.</div>
+    <div style="display:flex;gap:8px">
+      <button id="runAll" class="primary">▶ Run all agents</button>
+      <button id="expAll">⇩ Export findings (.md)</button>
+    </div>
+  </div>
+  <div class="agents">${state.agents.map(a=>{
+    const run=window.__axAgentRuns[a.id];
+    const sev=run?run.findings.filter(f=>f.sev==="Critical").length:0;
+    return `
     <div class="agent">
       <div class="h"><div class="ic">${a.icon}</div><h4>${a.name}</h4></div>
       <p>${a.desc}</p>
+      ${run?`<div class="dim" style="font-size:11px;margin:2px 0 8px">${run.findings.length} finding${run.findings.length===1?"":"s"}${sev?` · <span class="risk bad" style="padding:1px 6px;border-radius:4px">${sev} critical</span>`:""} · ${run.headline}</div>`:""}
       <div class="status">
-        <span><span class="dot ${a.on?'ok':''}"></span> ${a.on?'Active':'Idle'}</span>
-        <button data-id="${a.id}" class="${a.on?'primary':''}">${a.on?'Analyze':'Activate'}</button>
+        <span><span class="dot ${a.on?'ok':''}"></span> ${a.on?(run?'Analyzed':'Active'):'Idle'}</span>
+        <button data-id="${a.id}" class="${a.on?'primary':''}">${a.on?(run?'Re-run':'Analyze'):'Activate'}</button>
       </div>
-    </div>`).join("")}</div>`;
+    </div>`}).join("")}</div>`;
   root.querySelectorAll("button[data-id]").forEach(b=>b.onclick=()=>{
     const a=state.agents.find(x=>x.id===b.dataset.id);
     if(!a.on){ a.on=true; save(); render(); return; }
-    runAgent(a);
+    runAgent(a); render(); openAgentReport(a);
   });
+  root.querySelector("#runAll").onclick=()=>{
+    state.agents.forEach(a=>{ a.on=true; runAgent(a); });
+    save(); render(); toast("All agents completed"); openSweep();
+  };
+  root.querySelector("#expAll").onclick=()=>{
+    const ids=Object.keys(window.__axAgentRuns);
+    if(!ids.length){ toast("Run an agent first"); return; }
+    downloadText(`axiom-findings-${(state.repo.name||"repo").replace(/\W+/g,"-")}.md`, agentsMarkdown());
+  };
 }
+
+function agentSeverity(score){ return score>=70?"Critical":score>=40?"Warning":"Info"; }
+function sevClass(s){ return s==="Critical"?"bad":s==="Warning"?"warn":"ok"; }
+
+/* Each agent returns { headline, metrics:[[k,v]], findings:[{title,file,sev,why,fix,files}] } */
 function runAgent(a){
-  const r=state.repo; let report=""; let html=null;
-  const files=r.files;
-  const match = (re)=>files.filter(f=>re.test(f.path) || re.test((f.content||"").slice(0,4000)));
+  const r=state.repo, files=r.files;
+  const rev={}; r.edges.forEach(([x,y])=>{(rev[y]||=[]).push(x)});
+  const body=f=>(f.content||"");
+  const out={headline:"", metrics:[], findings:[]};
+
   if(a.id==="architect"){
-    const mods = Object.values(r.modules).sort((a,b)=>b.lines-a.lines);
-    report = `Modules ranked by size:\n\n`+mods.slice(0,10).map(m=>`  ${m.name.padEnd(28)} ${String(m.files).padStart(4)} files  ${m.lines} lines`).join("\n")+
-      `\n\nCross-module edges: ${r.edges.filter(([a,b])=>moduleOf(a)!==moduleOf(b)).length}`+
-      `\nHighest-coupling module: ${mods[0]?.name || "n/a"}`;
-  } else if(a.id==="security"){
-    const hits = match(/auth|jwt|password|secret|token|crypto|bcrypt|hash|api[_-]?key|process\.env/i);
-    if(!hits.length){
-      html = `<div class="dim">No security-relevant touchpoints found.</div>`;
-    } else {
-      const rev={}; r.edges.forEach(([x,y])=>{(rev[y]||=[]).push(x)});
-      const rows = hits.slice(0,20).map(f=>{
-        const deps=(rev[f.path]||[]).length;
-        const riskLevel = f.risk>=70?"Critical":f.risk>=40?"Semi-Risk":"Low";
-        const rClass = f.risk>=70?"bad":f.risk>=40?"warn":"ok";
-        const effort = estimateEffort(1+deps, deps);
-        const owner = suggestOwner(f.path);
-        const rec = "Review authentication/secret handling; ensure inputs are validated and secrets are not logged or committed.";
-        const ticket = buildTicket({riskLabel:riskLevel, riskLevel, file:f.path, effort, files:[f.path], services:[f.path.split("/")[0]], recommendation:rec, owner, kind:"a security-sensitive touchpoint"});
-        const tid="tk_sec_"+Math.random().toString(36).slice(2,8);
-        window.__axTickets[tid]=ticket;
-        return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-            <div><b>${escapeHtml(f.path)}</b> <span class="risk ${rClass}" style="padding:1px 8px;border-radius:4px;font-size:11px;margin-left:6px">${riskLevel} · ${f.risk}</span></div>
-            <div style="font-size:12px"><span class="dim">Effort:</span> <span class="risk ${effort.color}" style="padding:1px 8px;border-radius:4px">${effort.emoji} ${effort.level} · ${effort.hours}</span></div>
-          </div>
-          <div style="margin-top:6px;font-size:12px;color:var(--ink-dim)">Suggested Reviewer: <b>${owner}</b>
-            <button class="primary" style="float:right" onclick="__axCopyTicket('${tid}')">📋 Copy Ticket Draft</button>
-          </div>
-        </div>`;
-      }).join("");
-      html = `<div class="dim" style="margin-bottom:10px">Security-relevant touchpoints (${hits.length}):</div>${rows}`;
-    }
-  } else if(a.id==="debug"){
-    const hits = files.filter(f=>/try\s*{|catch\s*\(|throw\s+/.test(f.content||"")).map(f=>({p:f.path, c:((f.content||"").match(/catch\s*\(/g)||[]).length}));
-    report = `Files with error-handling constructs:\n\n`+hits.sort((a,b)=>b.c-a.c).slice(0,15).map(h=>`  ${h.p.padEnd(50)}  ${h.c} catch blocks`).join("\n");
-  } else if(a.id==="infra"){
-    const hits = match(/dockerfile|docker-compose|\.ya?ml$|\.tf$|ci\.ya?ml$|github\/workflows|k8s|helm|nginx|caddy/i);
-    report = `Infra/config artifacts (${hits.length}):\n\n`+hits.slice(0,20).map(f=>`  ${f.path}`).join("\n") || "No infra files detected.";
-  } else {
-    const seeds = [...files].sort((a,b)=>(b.fanIn||0)-(a.fanIn||0)).slice(0,7);
-    report = `Suggested onboarding tour (highest-leverage files):\n\n`+seeds.map((f,i)=>`  ${i+1}. ${f.path}  — fan-in ${f.fanIn||0}, ${f.lines} lines`).join("\n")+
-      `\n\nStart in ${seeds[0]?.path.split("/").slice(0,-1).join("/") || "src/"} — it has the most downstream reach.`;
+    const mods=Object.values(r.modules).sort((x,y)=>y.lines-x.lines);
+    const cross=r.edges.filter(([x,y])=>moduleOf(x)!==moduleOf(y));
+    const pairs={}; cross.forEach(([x,y])=>{const k=[moduleOf(x),moduleOf(y)].join(" ↔ ");pairs[k]=(pairs[k]||0)+1;});
+    // cycles between modules
+    const mEdge=new Set(cross.map(([x,y])=>moduleOf(x)+">"+moduleOf(y)));
+    const cycles=[...mEdge].filter(e=>{const [x,y]=e.split(">");return x<y && mEdge.has(y+">"+x);});
+    out.metrics=[["Modules",mods.length],["Cross-module edges",cross.length],["Circular module pairs",cycles.length],["Largest module",mods[0]?.name||"n/a"]];
+    out.headline=`${mods.length} modules, ${cycles.length} circular dependencies`;
+    cycles.slice(0,8).forEach(c=>{const [x,y]=c.split(">");out.findings.push({title:`Circular dependency: ${x} ↔ ${y}`,file:x,sev:"Critical",why:"Two modules import each other, so neither can be changed, tested, or extracted independently.",fix:`Extract the shared contract into a third module, or invert one direction with an interface/event.`,files:[x,y]});});
+    Object.entries(pairs).sort((p,q)=>q[1]-p[1]).slice(0,5).forEach(([k,v])=>{ if(v>=6) out.findings.push({title:`High coupling: ${k} (${v} edges)`,file:k.split(" ↔ ")[0],sev:v>=12?"Critical":"Warning",why:`${v} distinct imports cross this boundary — the split is nominal, not real.`,fix:"Consolidate the crossing calls behind one façade module, or merge the two modules if the boundary earns nothing.",files:[k]}); });
+    mods.slice(0,3).forEach(m=>{ if(m.files>=40) out.findings.push({title:`God module: ${m.name}`,file:m.name,sev:"Warning",why:`${m.files} files / ${m.lines} lines in one module — ownership and review get diffuse.`,fix:"Split along the strongest internal cluster seen in the Knowledge Graph.",files:[m.name]}); });
   }
-  openModal(`${a.name} Report`, html!==null ? html : `<pre>${escapeHtml(report)}</pre>`);
+
+  else if(a.id==="security"){
+    const pats=[
+      [/(api[_-]?key|secret|password|token)\s*[:=]\s*['"][A-Za-z0-9_\-\/+]{12,}['"]/i,"Hardcoded credential","Critical","A literal secret is embedded in source. Anyone with repo access — or the published bundle — has it.","Move it to an environment variable / secret manager and rotate the exposed value."],
+      [/\beval\s*\(|new Function\s*\(/,"Dynamic code execution","Critical","eval / new Function executes strings as code; any tainted input becomes remote code execution.","Replace with an explicit parser, lookup table, or JSON.parse."],
+      [/innerHTML\s*=|dangerouslySetInnerHTML/,"Raw HTML injection","Warning","Unescaped HTML assignment is the standard XSS sink.","Escape the value, or render text nodes / sanitize with DOMPurify."],
+      [/(select|insert|update|delete)\s+.*(\+\s*\w+|\$\{)/i,"String-built SQL","Critical","Query text is concatenated with variables — classic SQL injection.","Use parameterized queries / prepared statements."],
+      [/child_process|exec\s*\(|subprocess\.(call|Popen)/,"Shell execution","Warning","Spawning shells from app code widens the blast radius of any injection.","Avoid shells; if required, pass argument arrays and validate strictly."],
+      [/verify\s*:\s*false|rejectUnauthorized\s*:\s*false|InsecureSkipVerify/i,"TLS verification disabled","Critical","Certificate checks are turned off, enabling trivial MITM.","Remove the flag and trust a proper CA bundle."],
+      [/md5|sha1\b/i,"Weak hash","Warning","MD5/SHA-1 are broken for integrity and password use.","Use SHA-256+ for integrity and bcrypt/argon2 for passwords."],
+      [/cors\(\s*\)|Access-Control-Allow-Origin\s*[:=]\s*['"]\*/i,"Permissive CORS","Warning","Wildcard CORS lets any origin call authenticated endpoints.","Whitelist explicit origins."],
+    ];
+    let scanned=0;
+    for(const f of files){
+      const c=body(f); if(!c) continue; scanned++;
+      for(const [re,title,sev,why,fix] of pats){
+        if(re.test(c)) out.findings.push({title,file:f.path,sev,why,fix,files:[f.path],deps:(rev[f.path]||[]).length});
+      }
+    }
+    const authFiles=files.filter(f=>/auth|login|session|permission/i.test(f.path)).length;
+    out.metrics=[["Files scanned",scanned],["Findings",out.findings.length],["Critical",out.findings.filter(f=>f.sev==="Critical").length],["Auth-related files",authFiles]];
+    out.headline=out.findings.length?`${out.findings.length} security issues`:"no known vulnerable patterns";
+  }
+
+  else if(a.id==="debug"){
+    for(const f of files){
+      const c=body(f); if(!c) continue;
+      const empties=(c.match(/catch\s*\([^)]*\)\s*\{\s*\}/g)||[]).length;
+      if(empties) out.findings.push({title:`${empties} swallowed exception${empties>1?"s":""}`,file:f.path,sev:"Critical",why:"Empty catch blocks erase failures — incidents surface later, far from the cause.",fix:"Log with context and re-throw, or handle explicitly with a documented reason.",files:[f.path]});
+      const awaits=(c.match(/await\s+/g)||[]).length, trys=(c.match(/try\s*\{/g)||[]).length;
+      if(awaits>=6 && trys===0) out.findings.push({title:`Unguarded async path (${awaits} awaits, no try)`,file:f.path,sev:"Warning",why:"Every await here can reject and take the request down unhandled.",fix:"Wrap the I/O boundary in try/catch and return a typed error.",files:[f.path]});
+      const todos=(c.match(/TODO|FIXME|HACK|XXX/g)||[]).length;
+      if(todos>=3) out.findings.push({title:`${todos} unresolved TODO/FIXME markers`,file:f.path,sev:"Info",why:"Concentrated markers usually mark a known-shaky area.",fix:"Triage into tickets or delete the stale ones.",files:[f.path]});
+      if(/console\.log|print\(/.test(c) && /password|token|secret/i.test(c)) out.findings.push({title:"Possible secret logging",file:f.path,sev:"Critical",why:"Log statements sit next to credential handling — secrets can leak to log sinks.",fix:"Redact fields before logging.",files:[f.path]});
+    }
+    out.metrics=[["Files analysed",files.length],["Swallowed exceptions",out.findings.filter(f=>/swallowed/.test(f.title)).length],["Findings",out.findings.length]];
+    out.headline=out.findings.length?`${out.findings.length} reliability risks`:"error handling looks consistent";
+  }
+
+  else if(a.id==="infra"){
+    const infra=files.filter(f=>/dockerfile|docker-compose|\.ya?ml$|\.tf$|workflows\/|k8s|helm|nginx|caddy|Procfile|\.env/i.test(f.path));
+    const has=re=>infra.some(f=>re.test(f.path));
+    for(const f of infra){
+      const c=body(f);
+      if(/^FROM .*:latest/mi.test(c)) out.findings.push({title:"Unpinned base image (:latest)",file:f.path,sev:"Warning",why:"Builds are not reproducible; a silent upstream change can break or compromise the image.",fix:"Pin to a digest or explicit version tag.",files:[f.path]});
+      if(/USER\s+root/i.test(c)||(/^FROM /mi.test(c)&&!/USER\s+/i.test(c))) out.findings.push({title:"Container runs as root",file:f.path,sev:"Warning",why:"A container escape inherits root privileges.",fix:"Add a non-root USER and adjust file ownership.",files:[f.path]});
+      if(/(password|secret|token|key)\s*[:=]\s*\S{8,}/i.test(c)&&!/\$\{|\$\(|secretKeyRef/.test(c)) out.findings.push({title:"Credential in config file",file:f.path,sev:"Critical",why:"Deployment config holds a plaintext secret.",fix:"Reference a secret store / CI variable instead.",files:[f.path]});
+    }
+    if(!has(/workflows\/|\.gitlab-ci|circleci|jenkins/i)) out.findings.push({title:"No CI pipeline detected",file:"(repo root)",sev:"Warning",why:"Nothing enforces tests or lint before merge.",fix:"Add a CI workflow running install → lint → test on pull requests.",files:["(repo root)"]});
+    if(!has(/dockerfile|docker-compose/i)) out.findings.push({title:"No container definition",file:"(repo root)",sev:"Info",why:"Environments are reproduced by hand, so 'works on my machine' drift is likely.",fix:"Add a Dockerfile pinned to the runtime version you deploy.",files:["(repo root)"]});
+    out.metrics=[["Infra artifacts",infra.length],["CI configured",has(/workflows\/|\.gitlab-ci|circleci|jenkins/i)?"yes":"no"],["Containerized",has(/dockerfile/i)?"yes":"no"],["Findings",out.findings.length]];
+    out.headline=`${infra.length} infra artifacts, ${out.findings.length} gaps`;
+  }
+
+  else if(a.id==="onboard"){
+    const seeds=[...files].sort((x,y)=>(y.fanIn||0)-(x.fanIn||0)).slice(0,8);
+    const entry=files.find(f=>/(^|\/)(main|index|app|server|cli)\.[a-z]+$/i.test(f.path));
+    const docs=files.filter(f=>/readme|docs?\//i.test(f.path)).length;
+    out.metrics=[["Files",files.length],["Modules",Object.keys(r.modules).length],["Docs files",docs],["Entry point",entry?entry.path:"not found"]];
+    out.headline=`${seeds.length}-stop tour of the highest-leverage code`;
+    seeds.forEach((f,i)=>out.findings.push({title:`Stop ${i+1}: ${f.path.split("/").pop()}`,file:f.path,sev:"Info",why:`fan-in ${f.fanIn||0} · ${f.lines} lines · module ${f.module}. ${(f.fanIn||0)>3?"Many files depend on this — read it before changing anything.":"Core logic worth reading early."}`,fix:"Read top-to-bottom, then trace one call outward in the Knowledge Graph.",files:[f.path]}));
+    if(!docs) out.findings.push({title:"No README or docs directory",file:"(repo root)",sev:"Warning",why:"New engineers have no written entry point; the knowledge lives in people's heads.",fix:"Write a README covering setup, architecture in one diagram, and how to run tests.",files:["(repo root)"]});
+  }
+
+  else if(a.id==="quality"){
+    for(const f of files){
+      const c=body(f); if(!c) continue;
+      const cx=(c.match(/\b(if|for|while|case|catch|&&|\|\||\?)\b|\?\./g)||[]).length;
+      if(f.lines>400) out.findings.push({title:`Oversized file (${f.lines} lines)`,file:f.path,sev:f.lines>900?"Critical":"Warning",why:"Long files hide multiple responsibilities and make review shallow.",fix:"Split by responsibility; start with the largest exported unit.",files:[f.path]});
+      if(cx>60) out.findings.push({title:`High branching complexity (~${cx} decision points)`,file:f.path,sev:cx>140?"Critical":"Warning",why:"Dense branching means untestable paths and regression risk on every edit.",fix:"Extract guard clauses and pure helpers; add tests for the top three branches first.",files:[f.path]});
+      if(/(^|\n)\s*(function|const)\s+\w+/.test(c) && (f.fanIn||0)===0 && (f.fanOut||0)===0 && !/index|main|test|spec|config/i.test(f.path))
+        out.findings.push({title:"Orphaned file (no imports in or out)",file:f.path,sev:"Info",why:"Nothing references it — likely dead code or an undocumented entry point.",fix:"Delete it, or document why it stands alone.",files:[f.path]});
+    }
+    const dup={};
+    files.forEach(f=>{const k=f.path.split("/").pop().toLowerCase();(dup[k]||=[]).push(f.path);});
+    Object.entries(dup).filter(([k,v])=>v.length>=3&&!/index|readme|__init__|types/.test(k)).slice(0,5)
+      .forEach(([k,v])=>out.findings.push({title:`${v.length} files named ${k}`,file:v[0],sev:"Info",why:"Repeated filenames often signal copy-paste structure and ambiguous imports.",fix:"Rename by domain, or extract the shared behaviour.",files:v.slice(0,6)}));
+    out.metrics=[["Files",files.length],["Oversized",out.findings.filter(f=>/Oversized/.test(f.title)).length],["Complex",out.findings.filter(f=>/complexity/.test(f.title)).length],["Findings",out.findings.length]];
+    out.headline=out.findings.length?`${out.findings.length} maintainability debts`:"no significant debt detected";
+  }
+
+  else if(a.id==="tests"){
+    const isTest=f=>/(^|\/)(tests?|__tests__|spec)\//i.test(f.path)||/\.(test|spec)\.[a-z]+$/i.test(f.path)||/_test\.[a-z]+$/i.test(f.path);
+    const tests=files.filter(isTest), src=files.filter(f=>!isTest(f));
+    const ratio=src.length?Math.round(tests.length/src.length*100):0;
+    const covered=new Set();
+    tests.forEach(t=>{const base=t.path.split("/").pop().replace(/\.(test|spec)\./,".").replace(/_test\./,".");covered.add(base.toLowerCase());});
+    const risky=src.filter(f=>!covered.has(f.path.split("/").pop().toLowerCase()))
+      .sort((x,y)=>((y.fanIn||0)*10+y.risk)-((x.fanIn||0)*10+x.risk)).slice(0,12);
+    out.metrics=[["Test files",tests.length],["Source files",src.length],["Test-to-source ratio",ratio+"%"],["Untested high-risk",risky.length]];
+    out.headline=tests.length?`${ratio}% test-to-source ratio`:"no tests found";
+    if(!tests.length) out.findings.push({title:"No test suite detected",file:"(repo root)",sev:"Critical",why:"Every change ships unverified; regressions are found by users.",fix:"Add a runner and cover the three highest fan-in files first.",files:["(repo root)"]});
+    risky.forEach(f=>out.findings.push({title:`Untested: ${f.path.split("/").pop()}`,file:f.path,sev:(f.fanIn||0)>=4||f.risk>=70?"Critical":"Warning",why:`fan-in ${f.fanIn||0}, risk ${f.risk} — breaking this breaks callers silently.`,fix:"Write characterization tests for its public surface before the next refactor.",files:[f.path]}));
+  }
+
+  const sevRank={Critical:0,Warning:1,Info:2};
+  out.findings.sort((x,y)=>sevRank[x.sev]-sevRank[y.sev]);
+  out.at=new Date().toISOString();
+  window.__axAgentRuns[a.id]=out;
+  return out;
+}
+
+function openAgentReport(a){
+  const run=window.__axAgentRuns[a.id]; if(!run) return;
+  openModal(`${a.icon} ${a.name} — ${run.headline}`, agentReportHtml(a,run));
+}
+function agentReportHtml(a,run){
+  const rev={}; state.repo.edges.forEach(([x,y])=>{(rev[y]||=[]).push(x)});
+  const metrics=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">${run.metrics.map(([k,v])=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;min-width:110px"><div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.06em">${k}</div><div style="font-size:16px;font-weight:600;margin-top:2px">${escapeHtml(String(v))}</div></div>`).join("")}</div>`;
+  if(!run.findings.length) return metrics+`<div class="dim">No findings — this dimension looks healthy.</div>`;
+  const rows=run.findings.slice(0,40).map(fd=>{
+    const deps=(rev[fd.file]||[]).length;
+    const effort=estimateEffort((fd.files||[fd.file]).length, deps);
+    const owner=suggestOwner(fd.file);
+    const ticket=buildTicket({riskLabel:fd.sev, riskLevel:fd.sev, file:fd.file, effort, files:fd.files||[fd.file], services:[(fd.file||"").split("/")[0]], recommendation:fd.fix, owner, kind:fd.title});
+    const tid="tk_"+a.id+"_"+Math.random().toString(36).slice(2,8);
+    window.__axTickets[tid]=ticket;
+    return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+        <div><span class="risk ${sevClass(fd.sev)}" style="padding:1px 8px;border-radius:4px;font-size:11px">${fd.sev}</span> <b style="margin-left:6px">${escapeHtml(fd.title)}</b></div>
+        <div style="font-size:12px"><span class="dim">Effort:</span> <span class="risk ${effort.color}" style="padding:1px 8px;border-radius:4px">${effort.emoji} ${effort.level} · ${effort.hours}</span></div>
+      </div>
+      <div class="dim" style="font-size:11px;margin-top:4px">${escapeHtml(fd.file)}</div>
+      <div style="font-size:12px;margin-top:6px">${escapeHtml(fd.why)}</div>
+      <div style="font-size:12px;margin-top:4px"><b>Fix:</b> ${escapeHtml(fd.fix)}</div>
+      <div style="margin-top:8px;font-size:12px;color:var(--ink-dim)">Suggested Reviewer: <b>${owner}</b>
+        <span style="float:right;display:flex;gap:6px">
+          <button onclick="__axOpenFile('${escapeHtml(fd.file)}')">Open file</button>
+          <button class="primary" onclick="__axCopyTicket('${tid}')">📋 Copy Ticket Draft</button>
+        </span>
+      </div>
+    </div>`;
+  }).join("");
+  return metrics+`<div class="dim" style="margin-bottom:8px">${run.findings.length} finding${run.findings.length===1?"":"s"}, most severe first.</div>`+rows;
+}
+window.__axOpenFile=function(p){ if(state.repo.files.some(f=>f.path===p)) openFile(p); else toast("File content not stored"); };
+
+function openSweep(){
+  const cards=state.agents.filter(a=>window.__axAgentRuns[a.id]).map(a=>{
+    const run=window.__axAgentRuns[a.id];
+    const crit=run.findings.filter(f=>f.sev==="Critical").length, warn=run.findings.filter(f=>f.sev==="Warning").length;
+    return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+      <div><b>${a.icon} ${a.name}</b><div class="dim" style="font-size:11px;margin-top:2px">${escapeHtml(run.headline)}</div></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${crit?`<span class="risk bad" style="padding:1px 8px;border-radius:4px;font-size:11px">${crit} critical</span>`:""}
+        ${warn?`<span class="risk warn" style="padding:1px 8px;border-radius:4px;font-size:11px">${warn} warning</span>`:""}
+        <button onclick="__axShowAgent('${a.id}')">View</button>
+      </div></div>`;
+  }).join("");
+  const total=Object.values(window.__axAgentRuns).reduce((n,r)=>n+r.findings.length,0);
+  const crit=Object.values(window.__axAgentRuns).reduce((n,r)=>n+r.findings.filter(f=>f.sev==="Critical").length,0);
+  const health=Math.max(0,Math.min(100, 100 - crit*6 - (total-crit)*1.5));
+  openModal("Full repository sweep", `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <div style="border:1px solid var(--line);border-radius:8px;padding:8px 12px"><div class="dim" style="font-size:10px;text-transform:uppercase">Health score</div><div style="font-size:22px;font-weight:700">${Math.round(health)}<span class="dim" style="font-size:12px">/100</span></div></div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:8px 12px"><div class="dim" style="font-size:10px;text-transform:uppercase">Findings</div><div style="font-size:22px;font-weight:700">${total}</div></div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:8px 12px"><div class="dim" style="font-size:10px;text-transform:uppercase">Critical</div><div style="font-size:22px;font-weight:700">${crit}</div></div>
+    </div>${cards}
+    <div style="margin-top:10px"><button class="primary" onclick="__axExportFindings()">⇩ Export findings (.md)</button></div>`);
+}
+window.__axShowAgent=function(id){ const a=state.agents.find(x=>x.id===id); if(a) openAgentReport(a); };
+window.__axExportFindings=function(){ downloadText(`axiom-findings-${(state.repo.name||"repo").replace(/\W+/g,"-")}.md`, agentsMarkdown()); };
+
+function agentsMarkdown(){
+  let md=`# Axiom findings — ${state.repo.name||"repository"}\n\nGenerated ${new Date().toLocaleString()}\n`;
+  for(const a of state.agents){
+    const run=window.__axAgentRuns[a.id]; if(!run) continue;
+    md+=`\n## ${a.name}\n\n${run.headline}\n\n`+run.metrics.map(([k,v])=>`- **${k}:** ${v}`).join("\n")+`\n\n`;
+    run.findings.forEach(f=>{ md+=`### [${f.sev}] ${f.title}\n- File: \`${f.file}\`\n- Why: ${f.why}\n- Fix: ${f.fix}\n- Suggested reviewer: ${suggestOwner(f.file)}\n\n`; });
+  }
+  return md;
+}
+function downloadText(name, text){
+  const b=new Blob([text],{type:"text/markdown"}), u=URL.createObjectURL(b);
+  const a=document.createElement("a"); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u);
+  toast("Exported "+name);
 }
 
 
