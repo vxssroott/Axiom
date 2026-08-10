@@ -163,8 +163,11 @@
     <header class="top">
       <div class="crumbs" id="crumbs">Welcome</div>
       <div class="spacer"></div>
+      <span id="liveBadge" style="display:none;align-items:center;gap:6px;font-size:11px;border:1px solid #ef4444;color:#fca5a5;border-radius:999px;padding:3px 10px;margin-right:8px"><span style="width:7px;height:7px;border-radius:50%;background:#ef4444;display:inline-block;animation:axpulse 1.2s infinite"></span>LIVE</span>
+      <button id="btnPalette" title="Command palette (⌘K)" style="margin-right:8px">⌘K</button>
       <div class="chip" id="repoChip" style="display:none"><span class="dot ok"></span><span id="repoName">—</span></div>
       <button id="btnReset" style="display:none">Reset</button>
+
     </header>
     <div class="progress" id="prog" style="display:none"><div class="b" id="progB" style="width:0%"></div></div>
     <div class="view" id="view"></div>
@@ -200,6 +203,8 @@ const routes = [
   {id:"impact",   label:"Impact Predict",icon:"⚡", kbd:"4"},
   {id:"constitution",label:"Constitution",icon:"§", kbd:"5"},
   {id:"agents",   label:"Agents",        icon:"◉", kbd:"6"},
+  {id:"review",   label:"PR Review",     icon:"⑂", kbd:"7"},
+
 ];
 
 /* ---------- persistence ---------- */
@@ -267,6 +272,8 @@ function render(){
     impact: viewImpact,
     constitution: viewConstitution,
     agents: viewAgents,
+    review: viewReview,
+
   })[state.route](v);
 }
 
@@ -287,7 +294,9 @@ function viewWelcome(root){
         <button id="btnPickDir">📁 Choose Folder</button>
         <button id="btnPickZip">🗜 Upload ZIP</button>
         <button id="btnPaste">✍️ Paste Code</button>
+        <button id="btnLive">🔴 Live Watch Folder</button>
         <button id="btnDemo">✨ Try Demo Repo</button>
+
         <input type="file" id="fileDir" webkitdirectory directory multiple style="display:none"/>
         <input type="file" id="fileZip" accept=".zip" style="display:none"/>
       </div>
@@ -335,6 +344,8 @@ function viewWelcome(root){
   };
   root.querySelector("#ghUrl").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const u=e.target.value.trim(); if(u) analyzeUrl(u); }});
   root.querySelector("#btnPaste").onclick=()=>openPasteModal();
+  root.querySelector("#btnLive").onclick=()=>startLiveWatch();
+
   root.querySelector("#btnDemo").onclick=()=>loadDemo();
   renderRecent(root.querySelector("#recent"));
 }
@@ -1438,13 +1449,251 @@ function openModal(title, html){
   bg.onclick=e=>{ if(e.target===bg) bg.classList.remove("open"); };
 }
 
+/* ================= v3: Live Watch · Command Palette · PR Review · Snapshots ================= */
+const AX_STYLE=document.createElement("style");
+AX_STYLE.textContent=`@keyframes axpulse{0%,100%{opacity:1}50%{opacity:.25}}
+#axPal{position:fixed;inset:0;background:rgba(3,6,15,.72);backdrop-filter:blur(4px);z-index:10000;display:none;align-items:flex-start;justify-content:center;padding-top:12vh}
+#axPal.open{display:flex}
+#axPalBox{width:min(640px,92vw);background:#0c1018;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)}
+#axPalIn{width:100%;background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--ink);padding:14px 16px;font-size:15px;outline:none}
+#axPalList{max-height:52vh;overflow:auto}
+.axPalRow{padding:9px 16px;display:flex;gap:10px;align-items:center;cursor:pointer;font-size:13px}
+.axPalRow.sel{background:rgba(99,102,241,.16)}
+.axPalRow .k{font-size:10px;opacity:.5;margin-left:auto;text-transform:uppercase;letter-spacing:.05em}`;
+document.head.appendChild(AX_STYLE);
+
+/* ---------- shared recompute (incremental, fast) ---------- */
+function recomputeRepo(){
+  const r=state.repo; if(!r) return;
+  const {edges, modules} = buildGraph(r.files);
+  r.edges=edges; r.modules=modules; r.health=computeHealth(r.files, edges);
+  r.updatedAt=Date.now();
+  save();
+}
+
+/* ---------- LIVE WATCH (File System Access API) ---------- */
+const live={handle:null,timer:null,seen:new Map(),feed:[],busy:false};
+async function startLiveWatch(){
+  if(!window.showDirectoryPicker){ toast("Live Watch needs Chrome, Edge or Arc"); return; }
+  let dir; try{ dir=await window.showDirectoryPicker(); }catch(_){ return; }
+  live.handle=dir; live.seen=new Map(); live.feed=[];
+  toast("Scanning "+dir.name+" …");
+  const list=await liveScan(dir);
+  const files=[];
+  for(const it of list){ try{ files.push(mkFile(it.path, await (await it.handle.getFile()).text())); }catch(_){} }
+  list.forEach(it=>live.seen.set(it.path,it.mtime));
+  finalize(dir.name, files);
+  liveSetBadge(true);
+  clearInterval(live.timer);
+  live.timer=setInterval(livePoll, 2500);
+  toast("🔴 Live Watch active — edits re-analyze automatically");
+}
+function stopLiveWatch(){ clearInterval(live.timer); live.timer=null; live.handle=null; liveSetBadge(false); toast("Live Watch stopped"); }
+function liveSetBadge(on){ const b=document.getElementById("liveBadge"); if(b) b.style.display=on?"inline-flex":"none"; }
+async function liveScan(dir, prefix="", out=[]){
+  for await (const [name, h] of dir.entries()){
+    const path=prefix+name;
+    if(SKIP.test(path)||/^\./.test(name)) continue;
+    if(h.kind==="directory"){ if(out.length<4000) await liveScan(h, path+"/", out); }
+    else if(CODE_EXT.test(name)){
+      let f; try{ f=await h.getFile(); }catch(_){ continue; }
+      if(f.size>400*1024) continue;
+      out.push({path, handle:h, mtime:f.lastModified});
+    }
+  }
+  return out;
+}
+async function livePoll(){
+  if(!live.handle||live.busy||!state.repo) return;
+  live.busy=true;
+  try{
+    const list=await liveScan(live.handle);
+    const now=new Map(list.map(x=>[x.path,x.mtime]));
+    const changed=[], added=[], removed=[];
+    for(const it of list){
+      const prev=live.seen.get(it.path);
+      if(prev===undefined) added.push(it); else if(prev!==it.mtime) changed.push(it);
+    }
+    for(const p of live.seen.keys()) if(!now.has(p)) removed.push(p);
+    if(!changed.length && !added.length && !removed.length){ live.busy=false; return; }
+    const byPath=new Map(state.repo.files.map(f=>[f.path,f]));
+    for(const p of removed) byPath.delete(p);
+    for(const it of [...changed,...added]){
+      try{ byPath.set(it.path, mkFile(it.path, await (await it.handle.getFile()).text())); }catch(_){}
+    }
+    state.repo.files=[...byPath.values()];
+    live.seen=now;
+    const before=state.repo.health.score;
+    recomputeRepo();
+    const delta=state.repo.health.score-before;
+    [...changed.map(c=>["modified",c.path]),...added.map(c=>["added",c.path]),...removed.map(p=>["removed",p])]
+      .forEach(([kind,path])=>live.feed.unshift({kind,path,at:Date.now()}));
+    live.feed=live.feed.slice(0,40);
+    toast(`🔄 ${changed.length+added.length+removed.length} file(s) changed · health ${state.repo.health.score}${delta?` (${delta>0?"+":""}${delta})`:""}`);
+    if(["dashboard","graph","review","search"].includes(state.route)) render();
+  }catch(_){}
+  live.busy=false;
+}
+
+/* ---------- COMMAND PALETTE ---------- */
+(function buildPalette(){
+  const el=document.createElement("div");
+  el.id="axPal";
+  el.innerHTML=`<div id="axPalBox"><input id="axPalIn" placeholder="Jump to a file, view or action…" /><div id="axPalList"></div></div>`;
+  document.body.appendChild(el);
+  const inp=el.querySelector("#axPalIn"), listEl=el.querySelector("#axPalList");
+  let items=[], sel=0;
+  function commands(){
+    const c=routes.filter(r=>r.id!=="welcome"||!state.repo).map(r=>({label:r.label, hint:"View", run:()=>go(r.id)}));
+    c.push({label:"Run all agents", hint:"Action", run:()=>{ go("agents"); setTimeout(()=>document.getElementById("runAll")?.click(),60); }});
+    c.push({label:"Export findings (.md)", hint:"Action", run:()=>state.repo&&window.__axExportFindings()});
+    c.push({label:"Export snapshot (.json)", hint:"Action", run:exportSnapshot});
+    c.push({label:"Import snapshot (.json)", hint:"Action", run:importSnapshot});
+    c.push({label: live.timer?"Stop Live Watch":"Start Live Watch", hint:"Action", run:()=> live.timer?stopLiveWatch():startLiveWatch()});
+    c.push({label:"Reset repository", hint:"Action", run:()=>{ state.repo=null; localStorage.removeItem(LS); go("welcome"); }});
+    return c;
+  }
+  function score(q,s){ s=s.toLowerCase(); let i=0,sc=0; for(const ch of q){ const k=s.indexOf(ch,i); if(k<0) return -1; sc+= k===i?2:1; i=k+1; } return sc - s.length*0.01; }
+  function refresh(){
+    const q=inp.value.trim().toLowerCase();
+    const pool=[...commands(), ...((state.repo?.files)||[]).map(f=>({label:f.path, hint:f.lang+" · risk "+f.risk, run:()=>openFile(f.path)}))];
+    items = (q? pool.map(o=>({o,s:score(q,o.label)})).filter(x=>x.s>=0).sort((a,b)=>b.s-a.s).map(x=>x.o) : pool).slice(0,60);
+    sel=0; draw();
+  }
+  function draw(){
+    listEl.innerHTML=items.map((o,i)=>`<div class="axPalRow ${i===sel?'sel':''}" data-i="${i}"><span>${escapeHtml(o.label)}</span><span class="k">${escapeHtml(o.hint||"")}</span></div>`).join("")||`<div class="axPalRow dim">No matches</div>`;
+    listEl.querySelectorAll(".axPalRow[data-i]").forEach(r=>r.onclick=()=>pick(+r.dataset.i));
+    const s=listEl.querySelector(".sel"); if(s) s.scrollIntoView({block:"nearest"});
+  }
+  function pick(i){ const o=items[i]; close(); if(o) o.run(); }
+  function open(){ el.classList.add("open"); inp.value=""; refresh(); inp.focus(); }
+  function close(){ el.classList.remove("open"); }
+  window.__axPalette=open;
+  inp.addEventListener("input",refresh);
+  inp.addEventListener("keydown",e=>{
+    if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(items.length-1,sel+1);draw();}
+    else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(0,sel-1);draw();}
+    else if(e.key==="Enter"){e.preventDefault();pick(sel);}
+    else if(e.key==="Escape"){close();}
+  });
+  el.addEventListener("click",e=>{ if(e.target===el) close(); });
+  document.getElementById("btnPalette").onclick=open;
+})();
+
+/* ---------- SNAPSHOTS ---------- */
+function exportSnapshot(){
+  if(!state.repo) return toast("Nothing to export");
+  const blob=new Blob([JSON.stringify({v:3, repo:state.repo, agents:state.agents},null,0)],{type:"application/json"});
+  const u=URL.createObjectURL(blob), a=document.createElement("a");
+  a.href=u; a.download=`axiom-snapshot-${(state.repo.name||"repo").replace(/\W+/g,"-")}.json`; a.click(); URL.revokeObjectURL(u);
+  toast("Snapshot exported — share it with your team");
+}
+function importSnapshot(){
+  const i=document.createElement("input"); i.type="file"; i.accept=".json";
+  i.onchange=async()=>{ try{
+    const d=JSON.parse(await i.files[0].text());
+    if(!d.repo) throw new Error("Not an Axiom snapshot");
+    state.repo=d.repo; if(d.agents) state.agents=state.agents.map(a=>({...a,on:!!d.agents.find(x=>x.id===a.id)?.on}));
+    recomputeRepo(); go("dashboard"); toast("Snapshot loaded: "+state.repo.name);
+  }catch(e){ toast("Import failed: "+e.message); } };
+  i.click();
+}
+
+/* ---------- PR / DIFF REVIEW ---------- */
+function parseDiff(text){
+  const out={}; let cur=null;
+  for(const raw of text.split("\n")){
+    let m=raw.match(/^\+\+\+\s+(?:b\/)?(.+?)\s*$/);
+    if(m){ cur=m[1]==="/dev/null"?null:m[1]; if(cur) out[cur]||={add:0,del:0}; continue; }
+    if(/^(diff --git|index |--- )/.test(raw)) continue;
+    if(!cur) continue;
+    if(/^\+/.test(raw)) out[cur].add++;
+    else if(/^-/.test(raw)) out[cur].del++;
+  }
+  return Object.entries(out).map(([path,v])=>({path,...v}));
+}
+function blastRadius(path){
+  const rev={}; state.repo.edges.forEach(([a,b])=>{(rev[b]||=[]).push(a)});
+  const seen=new Set(), q=[path];
+  while(q.length){ const p=q.shift(); for(const d of (rev[p]||[])) if(!seen.has(d)){ seen.add(d); q.push(d); } }
+  return [...seen];
+}
+function matchRepoFile(p){
+  const f=state.repo.files;
+  return f.find(x=>x.path===p) || f.find(x=>x.path.endsWith("/"+p)) || f.find(x=>p.endsWith("/"+x.path)) || null;
+}
+function viewReview(root){
+  root.innerHTML=`
+  <div class="card big">
+    <div class="card-h"><h4>PR Review — paste a diff, get a merge verdict</h4></div>
+    <div class="card-b">
+      <div class="dim" style="font-size:12px;margin-bottom:8px">Paste the output of <code>git diff</code>, <code>git diff main...HEAD</code>, or a GitHub <code>.diff</code>. Axiom maps every touched file to its real blast radius, risk, effort and reviewers.</div>
+      <textarea id="rvIn" style="width:100%;height:180px;background:#080b12;border:1px solid var(--line);border-radius:8px;color:var(--ink);font-family:ui-monospace,monospace;font-size:12px;padding:10px" placeholder="diff --git a/src/auth/service.ts b/src/auth/service.ts&#10;--- a/src/auth/service.ts&#10;+++ b/src/auth/service.ts&#10;+  const token = sign(payload)"></textarea>
+      <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="rvGo">⚡ Review changes</button>
+        <button id="rvSnap">⇩ Export snapshot</button>
+        <button id="rvImp">⇧ Import snapshot</button>
+      </div>
+    </div>
+  </div>
+  <div id="rvOut"></div>
+  ${live.feed.length?`<div class="card big"><div class="card-h"><h4>Live change feed</h4></div><div class="card-b" style="padding:0"><div class="file-list">${live.feed.map(f=>`<div style="display:flex;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);font-size:12px"><span class="risk ${f.kind==="removed"?"bad":f.kind==="added"?"ok":"warn"}" style="padding:1px 8px;border-radius:4px;font-size:10px">${f.kind}</span><span>${escapeHtml(f.path)}</span><span class="dim" style="margin-left:auto">${new Date(f.at).toLocaleTimeString()}</span></div>`).join("")}</div></div></div>`:""}`;
+  root.querySelector("#rvSnap").onclick=exportSnapshot;
+  root.querySelector("#rvImp").onclick=importSnapshot;
+  root.querySelector("#rvGo").onclick=()=>{
+    const changes=parseDiff(root.querySelector("#rvIn").value);
+    const out=root.querySelector("#rvOut");
+    if(!changes.length){ out.innerHTML=`<div class="card big"><div class="card-b dim">No file changes detected in that diff.</div></div>`; return; }
+    const rows=changes.map(c=>{
+      const f=matchRepoFile(c.path);
+      const down=f?blastRadius(f.path):[];
+      const risk=f?f.risk:0;
+      const score=Math.min(100, Math.round(risk*0.5 + down.length*6 + (c.add+c.del)/12));
+      return {...c, f, down, risk, score, owner:suggestOwner(c.path), effort:estimateEffort(1, down.length)};
+    }).sort((a,b)=>b.score-a.score);
+    const total=rows.reduce((s,r)=>s+r.add+r.del,0);
+    const impacted=new Set(rows.flatMap(r=>r.down)).size;
+    const top=rows[0].score;
+    const verdict= top>=70?["Needs senior review","bad"] : top>=40?["Review with care","warn"] : ["Safe to merge","ok"];
+    out.innerHTML=`
+    <div class="grid g-cards" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+      <div class="card"><h5>Verdict</h5><div class="v" style="font-size:18px;color:var(--${verdict[1]})">${verdict[0]}</div><div class="sub">highest risk ${top}/100</div></div>
+      <div class="card"><h5>Files touched</h5><div class="v">${rows.length}</div><div class="sub">${total} lines changed</div></div>
+      <div class="card"><h5>Blast radius</h5><div class="v">${impacted}</div><div class="sub">downstream files impacted</div></div>
+      <div class="card"><h5>Reviewers</h5><div class="v" style="font-size:16px">${[...new Set(rows.map(r=>r.owner))].slice(0,3).join(", ")}</div><div class="sub">inferred from ownership map</div></div>
+    </div>
+    <div class="card big"><div class="card-h"><h4>Per-file impact</h4><button onclick="__axCopyReview()">📋 Copy review summary</button></div>
+    <div class="card-b" style="padding:0"><div class="file-list">
+    ${rows.map(r=>`<div style="padding:12px 14px;border-bottom:1px solid var(--line)">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b style="font-size:13px">${escapeHtml(r.path)}</b>
+        <span class="risk ${r.score>=70?"bad":r.score>=40?"warn":"ok"}" style="padding:1px 8px;border-radius:4px;font-size:11px">risk ${r.score}</span>
+        <span class="dim" style="font-size:11px">+${r.add} / −${r.del}</span>
+        ${r.f?"":`<span class="dim" style="font-size:11px">· not in indexed repo</span>`}
+        <span style="margin-left:auto;display:flex;gap:6px">${r.f?`<button onclick="__axOpenFile('${escapeHtml(r.f.path)}')">Open file</button>`:""}</span>
+      </div>
+      <div class="dim" style="font-size:12px;margin-top:6px">Impacts <b>${r.down.length}</b> downstream file(s)${r.down.length?": "+r.down.slice(0,5).map(escapeHtml).join(", ")+(r.down.length>5?` +${r.down.length-5} more`:""):""}</div>
+      <div class="dim" style="font-size:12px;margin-top:4px">Effort <b>${r.effort.label}</b> (${r.effort.hours}) · Reviewer <b>${r.owner}</b></div>
+    </div>`).join("")}
+    </div></div></div>`;
+    window.__axReviewRows=rows;
+  };
+}
+window.__axCopyReview=function(){
+  const rows=window.__axReviewRows||[];
+  const md=`## Axiom PR review — ${state.repo.name}\n\n`+rows.map(r=>`- **${r.path}** (+${r.add}/−${r.del}) — risk ${r.score}/100, ${r.down.length} downstream file(s), effort ${r.effort.label} (${r.effort.hours}), reviewer ${r.owner}`).join("\n");
+  copyText(md); toast("✅ Review summary copied");
+};
+
 /* ---------- keyboard ---------- */
 window.addEventListener("keydown",e=>{
+  if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); window.__axPalette(); return; }
   if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
-  const map={"1":"dashboard","2":"graph","3":"search","4":"impact","5":"constitution","6":"agents"};
+  const map={"1":"dashboard","2":"graph","3":"search","4":"impact","5":"constitution","6":"agents","7":"review"};
   if(map[e.key] && state.repo){ go(map[e.key]); }
   if(e.key==="/" && state.repo){ e.preventDefault(); go("search"); }
 });
+
 
 render();
 </script>
