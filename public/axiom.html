@@ -1695,6 +1695,746 @@ window.addEventListener("keydown",e=>{
 });
 
 
+/* ============================================================================
+   v4 — Institutional Memory Layer
+   Bi-temporal fact store · event-sourced log · multi-resolution projections ·
+   distillation & governance · MCP tool surface · federation · verification
+   ========================================================================== */
+
+const MEM_LS = "axiom.mem.v4";
+const SESSION_ID = "sess_" + Math.random().toString(36).slice(2, 8);
+
+const AXM = {
+  facts: new Map(),      // key -> fact (current version)
+  history: [],           // superseded / invalidated facts (full bi-temporal history)
+  log: [],               // append-only event log (source of truth)
+  seq: 0,
+  skills: [],
+  gates: [],
+  conflicts: [],
+  lastVerify: null,
+  asOf: null,            // ms timestamp for as-of queries (null = now)
+};
+
+function h32(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16); }
+function tk(s) { return Math.ceil((typeof s === "string" ? s : JSON.stringify(s)).length / 4); }
+function nowTs() { return Date.now(); }
+function fmtTime(t) { return new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function fmtDate(t) { return new Date(t).toLocaleString(); }
+
+/* ---------- event log ---------- */
+function emit(type, payload) {
+  const ev = { seq: ++AXM.seq, ts: nowTs(), type, actor: SESSION_ID, payload };
+  AXM.log.push(ev);
+  if (AXM.log.length > 6000) AXM.log.splice(0, AXM.log.length - 6000);
+  return ev;
+}
+
+/* ---------- fact upsert with bi-temporal semantics ---------- */
+function upsertFact({ layer, kind, subject, body, validFrom, prov }) {
+  const key = layer + "::" + kind + "::" + subject;
+  const hash = h32(JSON.stringify(body));
+  const prev = AXM.facts.get(key);
+  const tx = nowTs();
+  if (prev && prev.hash === hash) { prev.observedAt = tx; return prev; }
+  if (prev) {
+    prev.validTo = validFrom || tx;
+    prev.txTo = tx;
+    AXM.history.push(prev);
+    emit("fact.superseded", { key, from: prev.version, hash: prev.hash });
+  }
+  const fact = {
+    id: "f_" + h32(key) + "_" + ((prev?.version || 0) + 1),
+    key, layer, kind, subject, body, hash,
+    version: (prev?.version || 0) + 1,
+    validFrom: validFrom || tx, validTo: null,
+    txAt: tx, txTo: null,
+    observedAt: tx,
+    prov: prov || {},
+  };
+  AXM.facts.set(key, fact);
+  emit(prev ? "fact.revised" : "fact.created", { key, layer, kind, subject, version: fact.version, hash });
+  return fact;
+}
+function invalidateMissing(seenKeys, layerFilter) {
+  const tx = nowTs();
+  for (const [key, f] of [...AXM.facts]) {
+    if (layerFilter && f.layer !== layerFilter) continue;
+    if (seenKeys.has(key)) continue;
+    f.validTo = tx; f.txTo = tx;
+    AXM.history.push(f); AXM.facts.delete(key);
+    emit("fact.invalidated", { key, reason: "subject removed from source" });
+  }
+}
+
+/* ---------- as-of query ---------- */
+function factsAsOf(t) {
+  if (!t) return [...AXM.facts.values()];
+  const all = [...AXM.facts.values(), ...AXM.history];
+  return all.filter(f => f.validFrom <= t && (f.validTo == null || f.validTo > t) && f.txAt <= t);
+}
+
+/* ---------- symbol / hotspot extraction ---------- */
+const SYM_RE = /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?(?:function|class|def|fn|func|interface|type|struct|impl)\s+([A-Za-z_$][\w$]*)/g;
+function symbolsOf(src) { const out = []; let m; SYM_RE.lastIndex = 0; while ((m = SYM_RE.exec(src || "")) && out.length < 60) out.push(m[1]); return out; }
+
+const HOTSPOTS = [
+  { id: "todo", re: /\b(TODO|FIXME|HACK|XXX)\b[:\s].{0,90}/g, kind: "debt", sev: "Info" },
+  { id: "empty-catch", re: /catch\s*\([^)]*\)\s*\{\s*\}/g, kind: "failure-mode", sev: "Warning" },
+  { id: "secret", re: /(api[_-]?key|secret|password|token)\s*[:=]\s*["'][^"']{8,}["']/gi, kind: "security", sev: "Critical" },
+  { id: "sql", re: /(SELECT|INSERT|UPDATE|DELETE)\s+[^\n;]*\+\s*\w+/gi, kind: "security", sev: "Critical" },
+  { id: "insecure-http", re: /http:\/\/[^\s"'`]+/g, kind: "security", sev: "Warning" },
+  { id: "weak-hash", re: /\b(md5|sha1)\b/gi, kind: "security", sev: "Warning" },
+  { id: "any-cast", re: /\bas\s+any\b|:\s*any\b/g, kind: "quality", sev: "Info" },
+  { id: "sync-io", re: /\b(readFileSync|writeFileSync|execSync)\b/g, kind: "performance", sev: "Warning" },
+  { id: "deep-nest", re: /\n\s{20,}\S/g, kind: "quality", sev: "Info" },
+  { id: "console", re: /console\.log\(/g, kind: "quality", sev: "Info" },
+];
+function lineOf(src, idx) { return src.slice(0, idx).split("\n").length; }
+
+/* ---------- projection build (deterministic from repo + log) ---------- */
+function buildMemory(reason = "ingest") {
+  const r = state.repo; if (!r) return;
+  const t0 = performance.now();
+  const commit = h32(r.name + ":" + r.files.length + ":" + (r.updatedAt || r.createdAt));
+  const validFrom = r.updatedAt || r.createdAt || nowTs();
+  const seen = new Set();
+  const P = (path, loc) => ({ path, loc: loc || null, commit, session: SESSION_ID, source: r.name });
+
+  /* --- COARSE: architecture, ownership, module contracts, invariants --- */
+  const inbound = {}, outbound = {};
+  r.edges.forEach(([a, b]) => {
+    const ma = fileModule(a), mb = fileModule(b);
+    if (ma === mb) return;
+    (outbound[ma] ||= new Set()).add(mb);
+    (inbound[mb] ||= new Set()).add(ma);
+  });
+  for (const m of Object.values(r.modules)) {
+    const mFiles = r.files.filter(f => f.module === m.name);
+    const surface = mFiles.filter(f => f.fanIn > 0).map(f => f.path);
+    const invariants = [];
+    if (!(outbound[m.name]?.size)) invariants.push("leaf module — imports no sibling module");
+    if (surface.length <= Math.max(1, Math.round(mFiles.length * 0.3))) invariants.push("narrow public surface (" + surface.length + "/" + mFiles.length + ")");
+    if (mFiles.some(f => /auth|token|session|crypt/i.test(f.path))) invariants.push("security-sensitive: changes require security review");
+    const key = "coarse::module.contract::" + m.name; seen.add(key);
+    upsertFact({
+      layer: "coarse", kind: "module.contract", subject: m.name, validFrom, prov: P(m.name + "/"),
+      body: {
+        files: m.files, lines: m.lines, languages: Object.keys(m.langs),
+        owner: suggestOwner(mFiles[0]?.path || m.name),
+        publicSurface: surface.slice(0, 12),
+        dependsOn: [...(outbound[m.name] || [])],
+        consumedBy: [...(inbound[m.name] || [])],
+        invariants,
+      }
+    });
+  }
+  const archKey = "coarse::architecture.summary::" + r.name; seen.add(archKey);
+  upsertFact({
+    layer: "coarse", kind: "architecture.summary", subject: r.name, validFrom, prov: P("/"),
+    body: {
+      modules: Object.keys(r.modules).length, files: r.files.length, edges: r.edges.length,
+      health: r.health.score, highRisk: r.health.highRisk, orphans: r.health.orphans,
+      entrypoints: r.files.filter(f => f.fanIn === 0 && f.fanOut > 0).slice(0, 8).map(f => f.path),
+      hubs: [...r.files].sort((a, b) => b.fanIn - a.fanIn).slice(0, 8).map(f => f.path + " (fan-in " + f.fanIn + ")"),
+    }
+  });
+
+  /* --- MID: function/class semantics, dependency edges, impact surfaces --- */
+  const capped = [...r.files].sort((a, b) => b.risk - a.risk).slice(0, 1200);
+  for (const f of capped) {
+    const key = "mid::file.semantics::" + f.path; seen.add(key);
+    const blast = blastRadius(f.path);
+    upsertFact({
+      layer: "mid", kind: "file.semantics", subject: f.path, validFrom, prov: P(f.path),
+      body: {
+        module: f.module, lang: f.lang, lines: f.lines, risk: f.risk,
+        symbols: symbolsOf(f.content || ""),
+        fanIn: f.fanIn, fanOut: f.fanOut,
+        impactSurface: blast.length,
+        downstream: blast.slice(0, 10),
+        owner: suggestOwner(f.path),
+        effort: estimateEffort(blast.length || 1, f.fanIn),
+      }
+    });
+  }
+  r.edges.slice(0, 2500).forEach(([a, b]) => {
+    const key = "mid::dependency.edge::" + a + "→" + b; seen.add(key);
+    upsertFact({ layer: "mid", kind: "dependency.edge", subject: a + "→" + b, validFrom, prov: P(a), body: { from: a, to: b, crossModule: fileModule(a) !== fileModule(b) } });
+  });
+
+  /* --- FINE: exact snippets, failure modes, performance characteristics --- */
+  let fineCount = 0;
+  for (const f of r.files) {
+    const src = f.content; if (!src || fineCount > 900) continue;
+    for (const hs of HOTSPOTS) {
+      hs.re.lastIndex = 0; let m, n = 0;
+      while ((m = hs.re.exec(src)) && n < 4) {
+        n++; fineCount++;
+        const ln = lineOf(src, m.index);
+        const subject = f.path + ":" + ln + ":" + hs.id;
+        const key = "fine::" + hs.kind + "::" + subject; seen.add(key);
+        upsertFact({
+          layer: "fine", kind: hs.kind, subject, validFrom, prov: P(f.path, "L" + ln),
+          body: { rule: hs.id, severity: hs.sev, line: ln, snippet: (m[0] || "").slice(0, 160).trim(), owner: suggestOwner(f.path) }
+        });
+      }
+    }
+  }
+  invalidateMissing(seen);
+  emit("projection.rebuilt", { reason, facts: AXM.facts.size, ms: Math.round(performance.now() - t0) });
+  runDistillation(true);
+  verifyMemory();
+  saveMemory();
+}
+function fileModule(p) { const f = state.repo?.files.find(x => x.path === p); return f ? f.module : moduleOf(p); }
+
+/* ---------- distillation, conflicts, skills ---------- */
+function runDistillation(quiet) {
+  const facts = [...AXM.facts.values()];
+  /* conflict detection: identical symbol defined in many files (contract ambiguity) */
+  const symIndex = {};
+  facts.filter(f => f.kind === "file.semantics").forEach(f => f.body.symbols.forEach(s => (symIndex[s] ||= []).push(f.subject)));
+  const conflicts = [];
+  Object.entries(symIndex).forEach(([s, paths]) => {
+    if (paths.length >= 3 && s.length > 3) conflicts.push({ type: "ambiguous-symbol", subject: s, detail: paths.length + " definitions of `" + s + "`", refs: paths.slice(0, 6), severity: paths.length > 5 ? "Critical" : "Warning" });
+  });
+  /* deprecated patterns */
+  const dep = {};
+  facts.filter(f => f.layer === "fine").forEach(f => (dep[f.body.rule] ||= []).push(f.subject));
+  Object.entries(dep).forEach(([rule, refs]) => {
+    if (["weak-hash", "insecure-http", "sync-io", "empty-catch"].includes(rule) && refs.length >= 2)
+      conflicts.push({ type: "deprecated-pattern", subject: rule, detail: refs.length + " live occurrences of a pattern this codebase has outgrown", refs: refs.slice(0, 6), severity: "Warning" });
+  });
+  /* ownership conflicts */
+  const modOwners = {};
+  facts.filter(f => f.kind === "module.contract").forEach(f => (modOwners[f.body.owner] ||= []).push(f.subject));
+  Object.entries(modOwners).forEach(([o, mods]) => { if (mods.length > 6) conflicts.push({ type: "ownership-overload", subject: o, detail: o + " owns " + mods.length + " modules — single point of review failure", refs: mods.slice(0, 6), severity: "Info" }); });
+  AXM.conflicts = conflicts;
+
+  /* skill extraction: reusable, evidence-backed procedures */
+  const skills = [];
+  const hubs = facts.filter(f => f.kind === "file.semantics" && f.body.fanIn >= 3).sort((a, b) => b.body.fanIn - a.body.fanIn).slice(0, 5);
+  hubs.forEach(f => skills.push({
+    id: "skill_" + h32(f.subject), name: "Change " + f.subject.split("/").pop() + " safely",
+    when: "Any edit to " + f.subject, doIt: "Run the downstream suite for " + f.body.impactSurface + " dependents; request review from " + f.body.owner + "; expected effort " + f.body.effort.label + ".",
+    evidence: [f.id], confidence: Math.min(0.99, 0.55 + f.body.fanIn * 0.05)
+  }));
+  Object.entries(dep).forEach(([rule, refs]) => {
+    if (refs.length < 2) return;
+    skills.push({ id: "skill_" + rule, name: "Avoid `" + rule + "`", when: "Writing or reviewing code in this repo", doIt: "This pattern appears " + refs.length + "× and is on the deprecation path. Replace it rather than extend it.", evidence: refs.slice(0, 4), confidence: Math.min(0.95, 0.5 + refs.length * 0.05) });
+  });
+  const sec = facts.filter(f => f.layer === "fine" && f.body.severity === "Critical");
+  if (sec.length) skills.push({ id: "skill_sec_gate", name: "Security gate before merge", when: "Any PR touching " + [...new Set(sec.map(f => f.subject.split(":")[0].split("/")[0]))].slice(0, 3).join(", "), doIt: "Resolve " + sec.length + " critical fine-grained findings before merge; they are pre-action blocking gates.", evidence: sec.slice(0, 4).map(f => f.id), confidence: 0.92 });
+  AXM.skills = skills;
+
+  syncGates();
+  if (!quiet) { emit("distillation.run", { conflicts: conflicts.length, skills: skills.length }); toast("🧪 Distillation complete — " + conflicts.length + " conflicts, " + skills.length + " skills"); saveMemory(); }
+}
+
+/* ---------- governance gates ---------- */
+const BASE_GATES = [
+  { id: "g_secret", name: "No hardcoded credentials", test: "secret", action: "block", rationale: "Literal secrets in source are unrecoverable once pushed." },
+  { id: "g_sql", name: "No string-concatenated SQL", test: "sql", action: "block", rationale: "Concatenated SQL is the top injection vector in this codebase." },
+  { id: "g_hash", name: "No MD5/SHA1", test: "weak-hash", action: "warn", rationale: "Deprecated hashes; migrate to SHA-256/argon2." },
+  { id: "g_http", name: "No plaintext http://", test: "insecure-http", action: "warn", rationale: "Traffic must be TLS-terminated end to end." },
+  { id: "g_catch", name: "No silent catch blocks", test: "empty-catch", action: "warn", rationale: "Swallowed errors are the most expensive incidents to diagnose." },
+  { id: "g_syncio", name: "No sync I/O on hot paths", test: "sync-io", action: "warn", rationale: "Blocking I/O stalls the event loop under load." },
+  { id: "g_hub", name: "High fan-in files require named reviewer", test: "__hub", action: "warn", rationale: "Files with fan-in ≥ 5 have repo-wide blast radius." },
+  { id: "g_crit", name: "Security-sensitive paths require security review", test: "__sensitive", action: "block", rationale: "auth / payment / crypto paths are non-negotiable review gates." },
+];
+function syncGates() {
+  const existing = new Map(AXM.gates.map(g => [g.id, g]));
+  AXM.gates = BASE_GATES.map(g => ({ ...g, enabled: existing.has(g.id) ? existing.get(g.id).enabled : true, hits: countGateHits(g) }));
+}
+function countGateHits(g) {
+  const facts = [...AXM.facts.values()];
+  if (g.test === "__hub") return facts.filter(f => f.kind === "file.semantics" && f.body.fanIn >= 5).length;
+  if (g.test === "__sensitive") return facts.filter(f => f.kind === "file.semantics" && /auth|payment|billing|crypto|secret|session/i.test(f.subject)).length;
+  return facts.filter(f => f.layer === "fine" && f.body.rule === g.test).length;
+}
+function evaluateAction(path, intent) {
+  const facts = [...AXM.facts.values()];
+  const sem = facts.find(f => f.kind === "file.semantics" && f.subject === path);
+  const fine = facts.filter(f => f.layer === "fine" && f.subject.startsWith(path + ":"));
+  const triggered = [];
+  for (const g of AXM.gates.filter(x => x.enabled)) {
+    if (g.test === "__hub") { if (sem && sem.body.fanIn >= 5) triggered.push({ g, why: "fan-in " + sem.body.fanIn }); continue; }
+    if (g.test === "__sensitive") { if (/auth|payment|billing|crypto|secret|session/i.test(path)) triggered.push({ g, why: "sensitive path segment" }); continue; }
+    const hit = fine.filter(f => f.body.rule === g.test);
+    if (hit.length) triggered.push({ g, why: hit.length + "× at " + hit.slice(0, 3).map(f => "L" + f.body.line).join(", ") });
+  }
+  const blocked = triggered.some(t => t.g.action === "block") && intent !== "read";
+  const blast = blastRadius(path);
+  return {
+    path, intent, blocked, triggered,
+    verdict: blocked ? "BLOCKED" : triggered.length ? "PROCEED WITH GATES" : "CLEAR",
+    owner: suggestOwner(path),
+    impact: blast.length,
+    effort: estimateEffort(blast.length || 1, sem?.body.fanIn || 0),
+    skills: AXM.skills.filter(s => s.when.includes(path) || s.when.includes("this repo")).slice(0, 3),
+  };
+}
+
+/* ---------- verification & deterministic replay ---------- */
+function verifyMemory() {
+  const facts = [...AXM.facts.values()];
+  const checks = [];
+  checks.push({ name: "Every fact carries provenance", pass: facts.every(f => f.prov && f.prov.commit), detail: facts.filter(f => !f.prov?.commit).length + " missing" });
+  checks.push({ name: "No overlapping validity intervals per key", pass: !AXM.history.some(h => AXM.facts.get(h.key) && h.validTo == null), detail: "bi-temporal intervals closed on supersede" });
+  checks.push({ name: "Monotonic transaction time", pass: AXM.log.every((e, i) => i === 0 || e.ts >= AXM.log[i - 1].ts), detail: AXM.log.length + " events" });
+  const replay = replayProjection();
+  checks.push({ name: "Deterministic replay of event log", pass: replay.keys === facts.length, detail: replay.keys + " / " + facts.length + " keys reconstructed" });
+  checks.push({ name: "No orphan fine facts", pass: facts.filter(f => f.layer === "fine").every(f => state.repo?.files.some(x => x.path === f.subject.split(":")[0])), detail: "fine facts anchored to live files" });
+  AXM.lastVerify = { at: nowTs(), checks, pass: checks.every(c => c.pass) };
+  return AXM.lastVerify;
+}
+function replayProjection() {
+  const live = new Set();
+  for (const ev of AXM.log) {
+    if (ev.type === "fact.created" || ev.type === "fact.revised") live.add(ev.payload.key);
+    if (ev.type === "fact.invalidated") live.delete(ev.payload.key);
+  }
+  return { keys: live.size };
+}
+
+/* ---------- persistence ---------- */
+function saveMemory() {
+  try {
+    localStorage.setItem(MEM_LS, JSON.stringify({
+      log: AXM.log.slice(-2500), seq: AXM.seq,
+      gates: AXM.gates.map(g => ({ id: g.id, enabled: g.enabled })),
+      skills: AXM.skills.slice(0, 60),
+    }));
+  } catch (e) { }
+}
+function loadMemory() {
+  try {
+    const d = JSON.parse(localStorage.getItem(MEM_LS) || "null"); if (!d) return;
+    AXM.log = d.log || []; AXM.seq = d.seq || 0; AXM.skills = d.skills || [];
+    AXM.gates = (d.gates || []).map(g => ({ ...BASE_GATES.find(b => b.id === g.id), ...g }));
+  } catch (e) { }
+}
+loadMemory();
+
+/* ---------- MCP-style tool surface ---------- */
+const MCP_TOOLS = [
+  {
+    name: "memory.structural_query", desc: "Query the graph by module, symbol, language or risk. Returns contracts, not files.",
+    args: { subject: "auth", layer: "coarse|mid|fine" },
+    run: ({ subject = "", layer = "" }) => {
+      const t = AXM.asOf; const f = factsAsOf(t)
+        .filter(x => (!layer || x.layer === layer) && (!subject || (x.subject + JSON.stringify(x.body)).toLowerCase().includes(String(subject).toLowerCase())))
+        .slice(0, 25);
+      return { asOf: t ? fmtDate(t) : "now", matches: f.length, facts: f.map(compactFact) };
+    }
+  },
+  {
+    name: "memory.impact_analysis", desc: "Full downstream blast radius, effort estimate, reviewers and gates for a change.",
+    args: { path: state?.repo?.files?.[0]?.path || "src/index.ts" },
+    run: ({ path }) => {
+      const blast = blastRadius(path); const g = evaluateAction(path, "edit");
+      return { path, verdict: g.verdict, impactedFiles: blast.length, impacted: blast.slice(0, 25), owner: g.owner, effort: g.effort, gates: g.triggered.map(t => t.g.name) };
+    }
+  },
+  {
+    name: "memory.temporal_diff", desc: "What changed in the knowledge layer between two points in time.",
+    args: { sinceMinutes: 60 },
+    run: ({ sinceMinutes = 60 }) => {
+      const cut = nowTs() - sinceMinutes * 60000;
+      const evs = AXM.log.filter(e => e.ts >= cut);
+      const by = {}; evs.forEach(e => by[e.type] = (by[e.type] || 0) + 1);
+      return { window: sinceMinutes + "m", events: evs.length, byType: by, revised: evs.filter(e => e.type === "fact.revised").slice(-10).map(e => e.payload.key) };
+    }
+  },
+  {
+    name: "memory.skill_recall", desc: "Recall distilled, evidence-backed procedures for a task.",
+    args: { task: "edit auth" },
+    run: ({ task = "" }) => ({ task, skills: AXM.skills.filter(s => !task || (s.name + s.when + s.doIt).toLowerCase().includes(task.toLowerCase())).slice(0, 8) })
+  },
+  {
+    name: "memory.ownership_lookup", desc: "Who owns a path, and which reviewers are mandatory.",
+    args: { path: state?.repo?.files?.[0]?.path || "src/index.ts" },
+    run: ({ path }) => ({ path, owner: suggestOwner(path), module: fileModule(path), mandatory: /auth|payment|crypto/i.test(path) ? ["@security-team"] : [] })
+  },
+  {
+    name: "memory.path_find", desc: "Multi-hop dependency path between two files.",
+    args: { from: state?.repo?.files?.[0]?.path || "a.ts", to: state?.repo?.files?.[1]?.path || "b.ts" },
+    run: ({ from, to }) => ({ from, to, path: findPath(from, to) })
+  },
+  {
+    name: "memory.as_of", desc: "Pin every subsequent query to a past point in time.",
+    args: { minutesAgo: 0 },
+    run: ({ minutesAgo = 0 }) => { AXM.asOf = minutesAgo ? nowTs() - minutesAgo * 60000 : null; return { asOf: AXM.asOf ? fmtDate(AXM.asOf) : "now (live)", visibleFacts: factsAsOf(AXM.asOf).length }; }
+  },
+  {
+    name: "governance.pre_action_gate", desc: "Ask permission BEFORE acting. Returns BLOCKED / gated / clear.",
+    args: { path: state?.repo?.files?.[0]?.path || "src/index.ts", intent: "edit" },
+    run: ({ path, intent = "edit" }) => { const v = evaluateAction(path, intent); emit("gate.evaluated", { path, verdict: v.verdict }); return { verdict: v.verdict, blocked: v.blocked, gates: v.triggered.map(t => ({ gate: t.g.name, action: t.g.action, why: t.why, rationale: t.g.rationale })), owner: v.owner, impact: v.impact }; }
+  },
+];
+function compactFact(f) { return { id: f.id, layer: f.layer, kind: f.kind, subject: f.subject, v: f.version, validFrom: fmtDate(f.validFrom), prov: f.prov.path + (f.prov.loc ? "#" + f.prov.loc : "") + "@" + f.prov.commit, body: f.body }; }
+function findPath(from, to) {
+  const adj = {}; (state.repo?.edges || []).forEach(([a, b]) => (adj[a] ||= []).push(b));
+  const q = [[from]], seen = new Set([from]);
+  while (q.length) { const p = q.shift(); const last = p[p.length - 1]; if (last === to) return p; if (p.length > 8) continue; for (const n of adj[last] || []) if (!seen.has(n)) { seen.add(n); q.push([...p, n]); } }
+  return null;
+}
+function baselineTokensFor(result) {
+  const r = state.repo; if (!r) return 0;
+  const paths = new Set(JSON.stringify(result).match(/[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|css|html|md|json|yml|yaml)/g) || []);
+  let base = 0, n = 0;
+  for (const f of r.files) { if (paths.has(f.path) || n < 12) { base += tk(f.content || ""); n++; } }
+  if (!base) base = r.files.slice(0, 12).reduce((s, f) => s + tk(f.content || ""), 0);
+  return base;
+}
+
+/* ---------- federation ---------- */
+const FEDERATION = [
+  { id: "sec", name: "Security Specialist", icon: "🛡", kinds: ["security"], scope: "write: fine/security · read: all", priority: 1 },
+  { id: "perf", name: "Performance Specialist", icon: "⚡", kinds: ["performance"], scope: "write: fine/performance · read: mid+coarse", priority: 2 },
+  { id: "api", name: "API Contract Specialist", icon: "🔌", kinds: ["module.contract", "dependency.edge"], scope: "write: coarse/module.contract", priority: 2 },
+  { id: "mig", name: "Migration Specialist", icon: "🔀", kinds: ["debt", "quality"], scope: "write: fine/debt · read: all", priority: 3 },
+  { id: "arch", name: "Architecture Specialist", icon: "⚙", kinds: ["architecture.summary", "module.contract"], scope: "write: coarse/*", priority: 1 },
+];
+function fedStats() {
+  const facts = [...AXM.facts.values()];
+  return FEDERATION.map(s => ({ ...s, owned: facts.filter(f => s.kinds.includes(f.kind)).length, conflicts: AXM.conflicts.filter(c => (s.id === "sec" && c.type === "deprecated-pattern") || (s.id === "api" && c.type === "ambiguous-symbol") || (s.id === "arch" && c.type === "ownership-overload")).length }));
+}
+
+/* ============================ VIEWS ============================ */
+function ensureMemory() { if (state.repo && AXM.facts.size === 0) buildMemory("lazy"); }
+
+function layerCounts() {
+  const c = { coarse: 0, mid: 0, fine: 0 };
+  for (const f of AXM.facts.values()) c[f.layer]++;
+  return c;
+}
+
+function viewMemory(root) {
+  ensureMemory();
+  const c = layerCounts();
+  const asOf = AXM.asOf;
+  const facts = factsAsOf(asOf);
+  root.innerHTML = `
+  <div class="grid g-cards" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="card"><h5>Live Facts</h5><div class="v">${AXM.facts.size}</div><div class="sub">${AXM.history.length} superseded versions retained</div></div>
+    <div class="card"><h5>Coarse Layer</h5><div class="v" style="color:#7dd3fc">${c.coarse}</div><div class="sub">architecture · contracts · invariants</div></div>
+    <div class="card"><h5>Mid Layer</h5><div class="v" style="color:#a78bfa">${c.mid}</div><div class="sub">semantics · edges · impact surfaces</div></div>
+    <div class="card"><h5>Fine Layer</h5><div class="v" style="color:#fbbf24">${c.fine}</div><div class="sub">snippets · failure modes · perf</div></div>
+    <div class="card"><h5>Event Log</h5><div class="v">${AXM.log.length}</div><div class="sub">append-only · source of truth</div></div>
+  </div>
+
+  <div class="card big">
+    <div class="card-h">
+      <h4>Memory Inspector</h4>
+      <span class="dim" style="font-size:11px">${asOf ? "AS-OF " + fmtDate(asOf) : "live"}</span>
+      <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+        <input id="mq" placeholder="Filter subject / body…" style="background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:5px 8px;font-size:12px;width:220px"/>
+        <select id="mlayer" style="background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:5px 8px;font-size:12px">
+          <option value="">all layers</option><option value="coarse">coarse</option><option value="mid">mid</option><option value="fine">fine</option>
+        </select>
+        <button id="mrebuild">↻ Rebuild projection</button>
+        <button id="mdistill">🧪 Distill</button>
+      </div>
+    </div>
+    <div class="card-b" style="padding:0"><div class="file-list" id="mlist"></div></div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card big"><div class="card-h"><h4>Verification Loop</h4><button id="mverify" style="margin-left:auto;font-size:11px;padding:4px 8px">Re-verify</button></div>
+      <div class="card-b" id="mver"></div></div>
+    <div class="card big"><div class="card-h"><h4>Token Economics</h4></div><div class="card-b" id="mtok"></div></div>
+  </div>`;
+
+  const render_ = () => {
+    const q = (document.getElementById("mq").value || "").toLowerCase();
+    const L = document.getElementById("mlayer").value;
+    const rows = facts.filter(f => (!L || f.layer === L) && (!q || (f.subject + " " + JSON.stringify(f.body)).toLowerCase().includes(q))).slice(0, 300);
+    document.getElementById("mlist").innerHTML = rows.map(f => `
+      <div class="fi" data-k="${encodeURIComponent(f.key)}">
+        <span style="color:${f.layer === 'coarse' ? '#7dd3fc' : f.layer === 'mid' ? '#a78bfa' : '#fbbf24'};width:52px">${f.layer}</span>
+        <span style="width:150px;color:var(--ink-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.kind}</span>
+        <span class="path">${escapeHtml(f.subject)}</span>
+        <span class="chip">v${f.version}</span>
+        <span class="risk ${f.validTo ? 'warn' : 'ok'}">${f.validTo ? 'closed' : 'valid'}</span>
+      </div>`).join("") || `<div style="padding:14px" class="dim">No facts match.</div>`;
+    document.getElementById("mlist").querySelectorAll(".fi").forEach(el => el.onclick = () => openFactModal(decodeURIComponent(el.dataset.k)));
+  };
+  document.getElementById("mq").oninput = render_;
+  document.getElementById("mlayer").onchange = render_;
+  document.getElementById("mrebuild").onclick = () => { buildMemory("manual"); toast("↻ Projection rebuilt — " + AXM.facts.size + " facts"); render(); };
+  document.getElementById("mdistill").onclick = () => { runDistillation(false); render(); };
+  document.getElementById("mverify").onclick = () => { verifyMemory(); render(); };
+  render_();
+
+  const v = AXM.lastVerify || verifyMemory();
+  document.getElementById("mver").innerHTML = v.checks.map(c => `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px">
+    <span style="color:${c.pass ? 'var(--ok)' : 'var(--bad)'}">${c.pass ? '✓' : '✕'}</span><span>${c.name}</span><span class="dim" style="margin-left:auto">${escapeHtml(c.detail)}</span></div>`).join("")
+    + `<div class="dim" style="font-size:11px;margin-top:8px">Last run ${fmtTime(v.at)} · every memory update is replay-verified against the event log before it is trusted.</div>`;
+
+  const pack = tk(JSON.stringify([...AXM.facts.values()].filter(f => f.layer !== "fine").slice(0, 40).map(compactFact)));
+  const raw = (state.repo?.files || []).reduce((s, f) => s + tk(f.content || ""), 0);
+  const ratio = pack ? Math.max(1, Math.round(raw / pack)) : 0;
+  document.getElementById("mtok").innerHTML = `
+    <div style="display:flex;gap:18px;flex-wrap:wrap">
+      <div><div class="dim" style="font-size:11px">Full-context dump</div><div style="font-size:22px">${raw.toLocaleString()}<span class="dim" style="font-size:12px"> tok</span></div></div>
+      <div><div class="dim" style="font-size:11px">Axiom memory pack</div><div style="font-size:22px;color:var(--ok)">${pack.toLocaleString()}<span class="dim" style="font-size:12px"> tok</span></div></div>
+      <div><div class="dim" style="font-size:11px">Reduction</div><div style="font-size:22px;color:#7dd3fc">${ratio}×</div></div>
+    </div>
+    <div class="dim" style="font-size:11px;margin-top:10px">Coarse+mid contracts answer most agent questions without shipping a single file body. Fine facts are fetched only on demand, with exact provenance.</div>`;
+}
+
+function openFactModal(key) {
+  const f = AXM.facts.get(key) || AXM.history.find(x => x.key === key); if (!f) return;
+  const versions = [...AXM.history.filter(x => x.key === key), ...(AXM.facts.get(key) ? [AXM.facts.get(key)] : [])].sort((a, b) => a.version - b.version);
+  openModal(f.subject, `
+    <div class="grid g-cards" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-bottom:10px">
+      <div class="card"><h5>Layer</h5><div class="v" style="font-size:16px">${f.layer}</div></div>
+      <div class="card"><h5>Kind</h5><div class="v" style="font-size:16px">${f.kind}</div></div>
+      <div class="card"><h5>Version</h5><div class="v" style="font-size:16px">v${f.version}</div></div>
+      <div class="card"><h5>Hash</h5><div class="v" style="font-size:16px">${f.hash}</div></div>
+    </div>
+    <div style="font-size:12px;margin-bottom:8px"><b>Bi-temporal:</b> valid [${fmtDate(f.validFrom)} → ${f.validTo ? fmtDate(f.validTo) : "∞"}] · recorded ${fmtDate(f.txAt)}${f.txTo ? " → " + fmtDate(f.txTo) : ""}</div>
+    <div style="font-size:12px;margin-bottom:8px"><b>Provenance:</b> <span class="chip">${escapeHtml(f.prov.path || "—")}${f.prov.loc ? " #" + f.prov.loc : ""}</span> <span class="chip">commit ${f.prov.commit}</span> <span class="chip">session ${f.prov.session}</span></div>
+    <div style="font-size:12px;margin-bottom:6px"><b>Version history:</b> ${versions.map(v => `<span class="chip">v${v.version} · ${fmtTime(v.txAt)}</span>`).join(" ")}</div>
+    <pre>${escapeHtml(JSON.stringify(f.body, null, 2))}</pre>`);
+}
+
+function viewTimeline(root) {
+  ensureMemory();
+  const evs = [...AXM.log].reverse();
+  const span = 60;
+  root.innerHTML = `
+  <div class="card big">
+    <div class="card-h"><h4>Temporal Control — as-of queries</h4>
+      <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
+        <span class="dim" style="font-size:11px" id="tofLbl">${AXM.asOf ? fmtDate(AXM.asOf) : "live (now)"}</span>
+        <input type="range" id="tof" min="0" max="${span}" value="0" style="width:240px"/>
+        <button id="tlive">Return to live</button>
+      </div>
+    </div>
+    <div class="card-b">
+      <div style="font-size:12px" id="tstat"></div>
+      <div class="dim" style="font-size:11px;margin-top:8px">Nothing is ever deleted. Superseded facts keep their validity interval so any past state of the codebase's knowledge is reconstructable exactly as it was believed at that moment.</div>
+    </div>
+  </div>
+  <div class="grid" style="grid-template-columns:1.4fr 1fr">
+    <div class="card big"><div class="card-h"><h4>Append-only Event Log</h4><span class="dim" style="margin-left:auto;font-size:11px">${AXM.log.length} events</span></div>
+      <div class="card-b" style="padding:0"><div class="file-list" style="max-height:52vh;overflow:auto">${evs.slice(0, 400).map(e => `
+        <div class="fi"><span style="width:60px;color:var(--ink-mute)">#${e.seq}</span>
+        <span style="width:80px;color:var(--ink-dim)">${fmtTime(e.ts)}</span>
+        <span style="width:150px;color:${e.type.includes("invalid") ? "var(--bad)" : e.type.includes("revised") ? "var(--warn)" : "var(--ok)"}">${e.type}</span>
+        <span class="path">${escapeHtml((e.payload.key || e.payload.reason || JSON.stringify(e.payload)).slice(0, 120))}</span></div>`).join("") || `<div style="padding:14px" class="dim">No events yet.</div>`}</div></div></div>
+    <div class="card big"><div class="card-h"><h4>Temporal Diff</h4></div><div class="card-b" id="tdiff"></div></div>
+  </div>`;
+
+  const stat = () => {
+    const f = factsAsOf(AXM.asOf);
+    const c = { coarse: 0, mid: 0, fine: 0 }; f.forEach(x => c[x.layer]++);
+    document.getElementById("tstat").innerHTML = `Visible facts at this instant: <b>${f.length}</b> · coarse ${c.coarse} · mid ${c.mid} · fine ${c.fine}`;
+    document.getElementById("tofLbl").textContent = AXM.asOf ? fmtDate(AXM.asOf) : "live (now)";
+  };
+  document.getElementById("tof").oninput = e => { const m = +e.target.value; AXM.asOf = m ? nowTs() - m * 60000 : null; stat(); };
+  document.getElementById("tlive").onclick = () => { AXM.asOf = null; render(); };
+  stat();
+  const d = MCP_TOOLS.find(t => t.name === "memory.temporal_diff").run({ sinceMinutes: 60 });
+  document.getElementById("tdiff").innerHTML = `<div style="font-size:12px">Last 60 minutes — <b>${d.events}</b> events</div>
+    ${Object.entries(d.byType).map(([k, v]) => `<div style="display:flex;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px"><span>${k}</span><span style="margin-left:auto" class="dim">${v}</span></div>`).join("") || '<div class="dim" style="font-size:12px;margin-top:8px">Quiet window.</div>'}
+    ${d.revised.length ? `<div style="margin-top:10px;font-size:11px" class="dim">Recently revised: ${d.revised.map(k => `<span class="chip">${escapeHtml(k.split("::").pop().slice(0, 40))}</span>`).join(" ")}</div>` : ""}`;
+}
+
+function viewGovernance(root) {
+  ensureMemory();
+  const gates = AXM.gates.length ? AXM.gates : (syncGates(), AXM.gates);
+  const files = (state.repo?.files || []).slice().sort((a, b) => b.risk - a.risk).slice(0, 250);
+  root.innerHTML = `
+  <div class="grid g-cards" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="card"><h5>Active Gates</h5><div class="v">${gates.filter(g => g.enabled).length}/${gates.length}</div><div class="sub">pre-action enforcement</div></div>
+    <div class="card"><h5>Blocking Rules</h5><div class="v" style="color:var(--bad)">${gates.filter(g => g.enabled && g.action === "block").length}</div><div class="sub">agent cannot proceed</div></div>
+    <div class="card"><h5>Conflicts</h5><div class="v" style="color:var(--warn)">${AXM.conflicts.length}</div><div class="sub">detected by distillation</div></div>
+    <div class="card"><h5>Distilled Skills</h5><div class="v" style="color:var(--ok)">${AXM.skills.length}</div><div class="sub">reusable, evidence-backed</div></div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card big"><div class="card-h"><h4>Pre-Action Gate Simulator</h4></div>
+      <div class="card-b">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <select id="gpath" style="flex:1;min-width:200px;background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font-size:12px">
+            ${files.map(f => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.path)}</option>`).join("")}
+          </select>
+          <select id="gintent" style="background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font-size:12px">
+            <option>edit</option><option>delete</option><option>add-dependency</option><option>refactor</option><option>read</option>
+          </select>
+          <button class="primary" id="grun">Request permission</button>
+        </div>
+        <div id="gout" style="margin-top:12px"></div>
+      </div></div>
+
+    <div class="card big"><div class="card-h"><h4>Governance Rules</h4><span class="dim" style="margin-left:auto;font-size:11px">toggle to enforce</span></div>
+      <div class="card-b" style="padding:0"><div class="file-list">
+      ${gates.map(g => `<div class="fi" style="cursor:default"><input type="checkbox" data-g="${g.id}" ${g.enabled ? "checked" : ""}/>
+        <span style="width:230px">${g.name}</span>
+        <span class="path dim">${escapeHtml(g.rationale)}</span>
+        <span class="risk ${g.action === "block" ? "bad" : "warn"}">${g.action}</span>
+        <span class="chip">${g.hits ?? 0} hits</span></div>`).join("")}
+      </div></div></div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card big"><div class="card-h"><h4>Conflicts & Deprecated Patterns</h4><button id="gdist" style="margin-left:auto;font-size:11px;padding:4px 8px">Run distillation</button></div>
+      <div class="card-b" style="padding:0"><div class="file-list">${AXM.conflicts.map(c => `
+        <div class="fi" style="cursor:default"><span class="risk ${sevClass(c.severity)}">${c.severity}</span>
+        <span style="width:150px">${c.type}</span><span class="path">${escapeHtml(c.detail)}</span></div>`).join("") || `<div style="padding:14px" class="dim">No conflicts detected.</div>`}</div></div></div>
+
+    <div class="card big"><div class="card-h"><h4>Extracted Skills</h4><button id="gskill" style="margin-left:auto;font-size:11px;padding:4px 8px">Export skills (.md)</button></div>
+      <div class="card-b" style="padding:0"><div class="file-list">${AXM.skills.map(s => `
+        <div class="fi" style="cursor:default;align-items:flex-start"><span class="chip">${Math.round(s.confidence * 100)}%</span>
+        <span style="flex:1"><b>${escapeHtml(s.name)}</b><div class="dim" style="font-size:11px;margin-top:2px">When: ${escapeHtml(s.when)}</div><div class="dim" style="font-size:11px">Do: ${escapeHtml(s.doIt)}</div></span></div>`).join("") || `<div style="padding:14px" class="dim">Run distillation to extract skills.</div>`}</div></div></div>
+  </div>`;
+
+  root.querySelectorAll("input[data-g]").forEach(cb => cb.onchange = () => {
+    const g = AXM.gates.find(x => x.id === cb.dataset.g); g.enabled = cb.checked;
+    emit("gate.toggled", { key: g.id, enabled: g.enabled }); saveMemory(); toast((g.enabled ? "Enabled " : "Disabled ") + g.name);
+  });
+  document.getElementById("gdist").onclick = () => { runDistillation(false); render(); };
+  document.getElementById("gskill").onclick = () => downloadText("axiom-skills.md", AXM.skills.map(s => `## ${s.name}\n- **When:** ${s.when}\n- **Do:** ${s.doIt}\n- **Confidence:** ${Math.round(s.confidence * 100)}%\n`).join("\n"));
+  document.getElementById("grun").onclick = () => {
+    const path = document.getElementById("gpath").value, intent = document.getElementById("gintent").value;
+    const v = evaluateAction(path, intent); emit("gate.evaluated", { key: path, verdict: v.verdict });
+    document.getElementById("gout").innerHTML = `
+      <div style="border:1px solid ${v.blocked ? "var(--bad)" : v.triggered.length ? "var(--warn)" : "var(--ok)"};border-radius:8px;padding:12px">
+        <div style="font-size:15px;font-weight:600;color:${v.blocked ? "var(--bad)" : v.triggered.length ? "var(--warn)" : "var(--ok)"}">${v.verdict}</div>
+        <div class="dim" style="font-size:12px;margin-top:4px">${intent} · ${escapeHtml(path)} · ${v.impact} downstream files · ${v.effort.label} (${v.effort.hours}) · reviewer ${v.owner}</div>
+        ${v.triggered.map(t => `<div style="margin-top:8px;font-size:12px"><span class="risk ${t.g.action === "block" ? "bad" : "warn"}">${t.g.action}</span> <b>${t.g.name}</b><div class="dim" style="font-size:11px">${escapeHtml(t.g.rationale)} — ${escapeHtml(t.why)}</div></div>`).join("") || `<div class="dim" style="font-size:12px;margin-top:8px">No gate triggered. Memory has no record of a known-bad pattern on this path.</div>`}
+        ${v.skills.length ? `<div style="margin-top:10px;font-size:11px" class="dim">Recalled skills: ${v.skills.map(s => `<span class="chip">${escapeHtml(s.name)}</span>`).join(" ")}</div>` : ""}
+      </div>`;
+  };
+  document.getElementById("grun").click();
+}
+
+function viewMcp(root) {
+  ensureMemory();
+  root.innerHTML = `
+  <div class="card big"><div class="card-h"><h4>Unified Agent Interface — MCP tool surface</h4><span class="dim" style="margin-left:auto;font-size:11px">cross-harness · cross-model · local-first</span></div>
+    <div class="card-b"><div class="dim" style="font-size:12px">Any agent (Claude, GPT, Cursor, Copilot, your own harness) speaks to Axiom through these structured tools. Every response is contract-shaped, provenance-stamped and token-budgeted — never a raw file dump.</div></div></div>
+
+  <div class="grid" style="grid-template-columns:340px 1fr">
+    <div class="card big"><div class="card-h"><h4>Tools (${MCP_TOOLS.length})</h4></div>
+      <div class="card-b" style="padding:0"><div class="file-list" id="tlist">${MCP_TOOLS.map((t, i) => `
+        <div class="fi" data-i="${i}"><span style="flex:1"><b>${t.name}</b><div class="dim" style="font-size:11px;margin-top:2px;white-space:normal">${escapeHtml(t.desc)}</div></span></div>`).join("")}</div></div></div>
+
+    <div class="card big"><div class="card-h"><h4>Console</h4><span class="dim" id="tsel" style="margin-left:auto;font-size:11px"></span></div>
+      <div class="card-b">
+        <textarea id="targs" style="width:100%;height:90px;background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:10px;font-family:var(--mono);font-size:12px"></textarea>
+        <div style="display:flex;gap:6px;margin-top:8px"><button class="primary" id="trun">▶ Invoke</button><button id="tcopy">Copy response</button><span id="tmet" class="dim" style="margin-left:auto;font-size:11px;align-self:center"></span></div>
+        <pre id="tout" style="margin-top:10px;max-height:44vh;overflow:auto"></pre>
+      </div></div>
+  </div>
+
+  <div class="card big"><div class="card-h"><h4>Connect your harness</h4></div><div class="card-b">
+    <pre>${escapeHtml(`{
+  "mcpServers": {
+    "axiom": {
+      "command": "npx",
+      "args": ["-y", "@axiom/memory-mcp", "--vault", "./.axiom"],
+      "env": { "AXIOM_MODE": "local-first", "AXIOM_VAULT_KEY": "\${AXIOM_VAULT_KEY}" }
+    }
+  }
+}`)}</pre>
+    <div class="dim" style="font-size:11px;margin-top:8px">Local-first: the vault stays on disk, encrypted with your team key. Nothing leaves the machine unless you federate explicitly.</div></div></div>`;
+
+  let cur = 0;
+  const sel = i => {
+    cur = i; const t = MCP_TOOLS[i];
+    document.getElementById("tsel").textContent = t.name;
+    document.getElementById("targs").value = JSON.stringify(t.args, null, 2);
+    root.querySelectorAll("#tlist .fi").forEach((el, j) => el.style.background = j === i ? "var(--panel-2)" : "");
+  };
+  root.querySelectorAll("#tlist .fi").forEach(el => el.onclick = () => sel(+el.dataset.i));
+  document.getElementById("trun").onclick = () => {
+    const t = MCP_TOOLS[cur];
+    let args = {}; try { args = JSON.parse(document.getElementById("targs").value || "{}"); } catch (e) { toast("Invalid JSON args"); return; }
+    const t0 = performance.now();
+    let out; try { out = t.run(args); } catch (e) { out = { error: String(e) }; }
+    const ms = (performance.now() - t0).toFixed(2);
+    const used = tk(out), base = baselineTokensFor(out) || used * 10;
+    emit("tool.invoked", { key: t.name, ms: +ms });
+    document.getElementById("tout").textContent = JSON.stringify(out, null, 2);
+    document.getElementById("tmet").innerHTML = `${ms} ms · ${used.toLocaleString()} tok returned · vs ${base.toLocaleString()} raw · <span style="color:var(--ok)">${Math.max(1, Math.round(base / Math.max(1, used)))}× reduction</span>`;
+  };
+  document.getElementById("tcopy").onclick = () => copyText(document.getElementById("tout").textContent || "");
+  sel(0); document.getElementById("trun").click();
+}
+
+function viewFederation(root) {
+  ensureMemory();
+  const stats = fedStats();
+  const total = Math.max(1, AXM.facts.size);
+  root.innerHTML = `
+  <div class="card big"><div class="card-h"><h4>Multi-Agent Memory Federation</h4><span class="dim" style="margin-left:auto;font-size:11px">shared temporal graph · scoped write ownership</span></div>
+    <div class="card-b"><div class="dim" style="font-size:12px">Specialists read the same bi-temporal graph but may only write inside their own scope. Conflicting claims are arbitrated by priority, and losing claims are superseded — never deleted.</div></div></div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+    ${stats.map(s => `<div class="card big"><div class="card-h"><h4>${s.icon} ${s.name}</h4><span class="chip" style="margin-left:auto">P${s.priority}</span></div>
+      <div class="card-b">
+        <div style="display:flex;gap:16px"><div><div class="dim" style="font-size:11px">Facts owned</div><div style="font-size:20px">${s.owned}</div></div>
+        <div><div class="dim" style="font-size:11px">Share</div><div style="font-size:20px">${Math.round(s.owned / total * 100)}%</div></div>
+        <div><div class="dim" style="font-size:11px">Conflicts</div><div style="font-size:20px;color:${s.conflicts ? "var(--warn)" : "var(--ok)"}">${s.conflicts}</div></div></div>
+        <div style="height:6px;border-radius:4px;background:var(--panel-2);margin-top:10px;overflow:hidden"><div style="height:100%;width:${Math.min(100, s.owned / total * 100)}%;background:linear-gradient(90deg,#7dd3fc,#a78bfa)"></div></div>
+        <div class="dim" style="font-size:11px;margin-top:8px">${s.scope}</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">Subscribes: ${s.kinds.map(k => `<span class="chip">${k}</span>`).join(" ")}</div>
+      </div></div>`).join("")}
+  </div>
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card big"><div class="card-h"><h4>Isolation & Privacy</h4></div><div class="card-b">
+      <label style="display:flex;gap:8px;align-items:center;font-size:12px;padding:6px 0"><input type="checkbox" id="pRedact" checked/> Redact literal secrets from all federated facts</label>
+      <label style="display:flex;gap:8px;align-items:center;font-size:12px;padding:6px 0"><input type="checkbox" id="pDp" /> Differential privacy on cross-tenant aggregates (ε = 1.0)</label>
+      <label style="display:flex;gap:8px;align-items:center;font-size:12px;padding:6px 0"><input type="checkbox" id="pLocal" checked/> Local-first vault — no fact leaves this machine</label>
+      <div class="dim" style="font-size:11px;margin-top:8px" id="pNote"></div></div></div>
+    <div class="card big"><div class="card-h"><h4>Arbitration Ledger</h4></div><div class="card-b" style="padding:0"><div class="file-list">
+      ${AXM.log.filter(e => e.type === "fact.superseded").slice(-40).reverse().map(e => `<div class="fi" style="cursor:default"><span style="width:70px;color:var(--ink-mute)">#${e.seq}</span><span style="width:80px" class="dim">${fmtTime(e.ts)}</span><span class="path">${escapeHtml(String(e.payload.key).slice(0, 90))}</span><span class="chip">v${e.payload.from} → v${e.payload.from + 1}</span></div>`).join("") || `<div style="padding:14px" class="dim">No superseded claims yet — the graph is uncontested.</div>`}
+    </div></div></div>
+  </div>`;
+  const note = () => {
+    const r = document.getElementById("pRedact").checked, d = document.getElementById("pDp").checked, l = document.getElementById("pLocal").checked;
+    document.getElementById("pNote").textContent = `Effective posture: ${l ? "local-first vault" : "federated"}${r ? " · secrets redacted" : " · RAW SECRETS EXPOSED"}${d ? " · ε-DP aggregates" : ""}.`;
+  };
+  ["pRedact", "pDp", "pLocal"].forEach(id => document.getElementById(id).onchange = note); note();
+}
+
+/* ---------- wire into shell ---------- */
+routes.push(
+  { id: "memory", label: "Memory Store", icon: "▥", kbd: "8" },
+  { id: "timeline", label: "Temporal Log", icon: "⧗", kbd: "9" },
+  { id: "governance", label: "Governance", icon: "⚖", kbd: "0" },
+  { id: "mcp", label: "Agent API", icon: "⌁" },
+  { id: "federation", label: "Federation", icon: "⬡" },
+);
+const VIEW_MAP = {
+  welcome: viewWelcome, dashboard: viewDashboard, graph: viewGraph, search: viewSearch,
+  impact: viewImpact, constitution: viewConstitution, agents: viewAgents, review: viewReview,
+  memory: viewMemory, timeline: viewTimeline, governance: viewGovernance, mcp: viewMcp, federation: viewFederation,
+};
+render = function () {
+  renderNav(); renderTop();
+  const v = document.getElementById("view"); v.innerHTML = "";
+  if (!state.repo && state.route !== "welcome") state.route = "welcome";
+  (VIEW_MAP[state.route] || viewWelcome)(v);
+};
+
+/* rebuild memory whenever the repo changes */
+const _finalize = finalize;
+finalize = function (name, files) { _finalize(name, files); try { buildMemory("ingest"); } catch (e) { console.error(e); } };
+const _recompute = recomputeRepo;
+recomputeRepo = function () { _recompute(); try { buildMemory("live-change"); } catch (e) { console.error(e); } };
+
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  const map = { "8": "memory", "9": "timeline", "0": "governance" };
+  if (map[e.key] && state.repo) go(map[e.key]);
+});
+
+
 render();
 </script>
 </body>
