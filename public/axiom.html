@@ -2434,6 +2434,307 @@ window.addEventListener("keydown", e => {
   if (map[e.key] && state.repo) go(map[e.key]);
 });
 
+/* ================================================================
+   v5 — Context Compiler · Architecture Fitness · Refactor Simulator
+   ================================================================ */
+
+/* ---------- shared graph utilities ---------- */
+function revIndex(){ const rev={}; state.repo.edges.forEach(([a,b])=>{(rev[b]||=[]).push(a)}); return rev; }
+function fwdIndex(){ const f={}; state.repo.edges.forEach(([a,b])=>{(f[a]||=[]).push(b)}); return f; }
+function findCycles(limit=12){
+  const fwd=fwdIndex(), color={}, stack=[], out=[];
+  const nodes=state.repo.files.map(f=>f.path);
+  function dfs(n){
+    if(out.length>=limit) return;
+    color[n]=1; stack.push(n);
+    for(const m of (fwd[n]||[])){
+      if(color[m]===1){ const i=stack.indexOf(m); if(i>=0) out.push(stack.slice(i).concat(m)); }
+      else if(!color[m]) dfs(m);
+    }
+    stack.pop(); color[n]=2;
+  }
+  for(const n of nodes){ if(!color[n]) dfs(n); }
+  return out;
+}
+function waveOrder(root){
+  // reverse-dependency BFS layers = safe migration ordering
+  const rev=revIndex(), seen=new Set([root]), waves=[]; let frontier=[root];
+  while(frontier.length && waves.length<8){
+    const next=[];
+    for(const p of frontier) for(const d of (rev[p]||[])) if(!seen.has(d)){ seen.add(d); next.push(d); }
+    if(!next.length) break;
+    waves.push(next); frontier=next;
+  }
+  return waves;
+}
+function fileByPath(p){ return state.repo.files.find(f=>f.path===p); }
+function repoTokens(){ return state.repo.files.reduce((s,f)=>s+tk(f.content||f.path),0); }
+
+/* ================= 1. CONTEXT COMPILER ================= */
+function compilePack(task, budget){
+  const terms=(task.toLowerCase().match(/[a-z_][a-z0-9_]{2,}/g)||[]);
+  const uniq=[...new Set(terms)];
+  const scored = state.repo.files.map(f=>{
+    const hay=(f.path+" "+(f.tokens||[]).join(" ")).toLowerCase();
+    let s=0;
+    for(const t of uniq){
+      if(f.path.toLowerCase().includes(t)) s+=6;
+      if(hay.includes(t)) s+=2;
+    }
+    s += Math.min(10,(f.fanIn||0))*0.8;
+    s += (f.risk||0)/25;
+    return {f, s};
+  }).filter(x=>x.s>0).sort((a,b)=>b.s-a.s);
+
+  const picked=[]; let used=0;
+  const head = [
+    `# Context pack — ${state.repo.name}`,
+    `Task: ${task}`,
+    `Repo: ${state.repo.files.length} files · health ${state.repo.health.score}/100 · ${Object.keys(state.repo.modules).length} modules`,
+    ``,
+    `## Architecture`,
+    Object.values(state.repo.modules).sort((a,b)=>b.lines-a.lines).slice(0,8)
+      .map(m=>`- ${m.name}: ${m.files} files, ${m.lines} lines (${Object.keys(m.langs).join(", ")})`).join("\n"),
+    ``,
+    `## Invariants`,
+    (typeof BASE_GATES!=="undefined"?BASE_GATES:[]).slice(0,5).map(g=>`- [${g.mode||g.severity||"warn"}] ${g.name||g.id}`).join("\n") || "- none declared",
+    ``,
+    `## Relevant surfaces`
+  ].join("\n");
+  used = tk(head);
+
+  const sections=[];
+  for(const {f,s} of scored){
+    const syms = (typeof symbolsOf==="function"? symbolsOf(f.content||"") : []).slice(0,10);
+    const down = blastRadius(f.path).slice(0,6);
+    const body = [
+      `### ${f.path}  (${f.lang}, ${f.lines} lines, fan-in ${f.fanIn||0}, risk ${f.risk||0})`,
+      syms.length?`symbols: ${syms.join(", ")}`:null,
+      f.imports&&f.imports.length?`imports: ${f.imports.slice(0,8).join(", ")}`:null,
+      down.length?`downstream: ${down.join(", ")}${blastRadius(f.path).length>6?" …":""}`:null,
+      `owner: ${suggestOwner(f.path)}`
+    ].filter(Boolean).join("\n");
+    const cost=tk(body);
+    if(used+cost>budget) break;
+    used+=cost; sections.push({path:f.path, score:s, cost, body});
+  }
+  const text = head+"\n\n"+sections.map(s=>s.body).join("\n\n")+
+    `\n\n## Contract\nAnswer only from the facts above. If a fact is missing, call memory.structural_query rather than guessing.\n`;
+  return {text, used:tk(text), sections, considered:scored.length};
+}
+
+function viewPack(root){
+  const budgetInit = 8000;
+  root.innerHTML=`
+  <div class="card big"><div class="card-h"><h4>Context Compiler</h4><span class="dim" style="margin-left:auto;font-size:11px">task → token-budgeted, provenance-stamped context pack</span></div>
+    <div class="card-b"><div class="dim" style="font-size:12px">Describe the task an agent (or a new engineer) is about to do. Axiom retrieves only the surfaces that matter, ranked by lexical relevance, fan-in and risk, then packs them under a hard token budget.</div>
+    <div class="row" style="margin-top:12px"><input id="pkq" placeholder="e.g. add rate limiting to the checkout payment flow" style="flex:1"/><button class="primary" id="pkgo">Compile</button></div>
+    <div class="row" style="margin-top:10px;align-items:center;gap:10px"><span class="dim" style="font-size:11px">Budget</span>
+      <input type="range" id="pkb" min="2000" max="32000" step="1000" value="${budgetInit}" style="flex:1"/>
+      <span class="chip" id="pkbv">${budgetInit.toLocaleString()} tok</span></div>
+    </div></div>
+  <div class="grid" style="grid-template-columns:300px 1fr">
+    <div class="card big"><div class="card-h"><h4>Selected surfaces</h4></div><div class="card-b" style="padding:0"><div class="file-list" id="pksel"><div class="dim" style="padding:14px;font-size:12px">Compile to populate.</div></div></div></div>
+    <div class="card big"><div class="card-h"><h4>Pack</h4><span class="dim" id="pkmet" style="margin-left:auto;font-size:11px"></span></div>
+      <div class="card-b"><div style="display:flex;gap:6px;margin-bottom:8px"><button id="pkcopy">Copy pack</button><button id="pkdl">Download .md</button></div>
+      <pre id="pkout" style="max-height:52vh;overflow:auto">—</pre></div></div>
+  </div>`;
+  const b=document.getElementById("pkb");
+  b.oninput=()=>document.getElementById("pkbv").textContent=(+b.value).toLocaleString()+" tok";
+  let last="";
+  function run(){
+    const q=document.getElementById("pkq").value.trim();
+    if(!q){ toast("Describe the task first"); return; }
+    const r=compilePack(q, +b.value);
+    last=r.text;
+    document.getElementById("pkout").textContent=r.text;
+    const base=repoTokens();
+    document.getElementById("pkmet").innerHTML=`${r.used.toLocaleString()} tok · ${r.sections.length}/${r.considered} surfaces · vs ${base.toLocaleString()} raw repo · <span style="color:var(--ok)">${Math.max(1,Math.round(base/Math.max(1,r.used)))}× reduction</span>`;
+    document.getElementById("pksel").innerHTML = r.sections.length? r.sections.map(s=>`
+      <div class="fi" data-p="${escapeHtml(s.path)}"><span style="flex:1">${escapeHtml(s.path)}<div class="dim" style="font-size:11px">rank ${s.score.toFixed(1)} · ${s.cost} tok</div></span></div>`).join("")
+      : `<div class="dim" style="padding:14px;font-size:12px">No surface matched — try different words.</div>`;
+    document.getElementById("pksel").querySelectorAll(".fi").forEach(el=>el.onclick=()=>openFile(el.dataset.p));
+    try{ emit("pack.compiled",{key:q, tokens:r.used}); }catch(e){}
+  }
+  document.getElementById("pkgo").onclick=run;
+  document.getElementById("pkq").onkeydown=e=>{ if(e.key==="Enter") run(); };
+  document.getElementById("pkcopy").onclick=()=>copyText(last||"");
+  document.getElementById("pkdl").onclick=()=>downloadText("axiom-context-pack.md", last||"");
+}
+
+/* ================= 2. ARCHITECTURE FITNESS FUNCTIONS ================= */
+const FIT_LS="axiom.fitness.v5", FIT_HIST="axiom.fitness.hist.v5";
+const DEFAULT_RULES=[
+  {id:"no-cycles", name:"No circular dependencies", type:"cycles", severity:"critical"},
+  {id:"fan-in",    name:"Fan-in ceiling", type:"maxFanIn", limit:12, severity:"warn"},
+  {id:"file-size", name:"File size ceiling", type:"maxLines", limit:400, severity:"warn"},
+  {id:"orphans",   name:"Orphan ratio under 15%", type:"maxOrphanPct", limit:15, severity:"warn"},
+  {id:"layering",  name:"UI must not reach the data layer directly", type:"forbidEdge",
+   from:"(components|ui|pages|views|routes)", to:"(db|database|repositor|prisma|sql|dao)", severity:"critical"},
+  {id:"secrets",   name:"No hardcoded credentials", type:"forbidContent",
+   pattern:"(api[_-]?key|secret|password|passwd|token)\\s*[:=]\\s*[\"'][A-Za-z0-9_\\-]{12,}", severity:"critical"}
+];
+function fitRules(){ try{ const r=JSON.parse(localStorage.getItem(FIT_LS)); if(Array.isArray(r)&&r.length) return r; }catch(e){} return DEFAULT_RULES; }
+function fitSave(r){ try{ localStorage.setItem(FIT_LS, JSON.stringify(r)); }catch(e){} }
+function evalRule(r){
+  const files=state.repo.files, v=[];
+  try{
+    if(r.type==="cycles"){
+      findCycles(10).forEach(c=>v.push({path:c[0], detail:c.map(p=>p.split("/").pop()).join(" → ")}));
+    } else if(r.type==="maxFanIn"){
+      files.filter(f=>(f.fanIn||0)>r.limit).forEach(f=>v.push({path:f.path, detail:`fan-in ${f.fanIn} > ${r.limit}`}));
+    } else if(r.type==="maxLines"){
+      files.filter(f=>f.lines>r.limit).forEach(f=>v.push({path:f.path, detail:`${f.lines} lines > ${r.limit}`}));
+    } else if(r.type==="maxOrphanPct"){
+      const orph=files.filter(f=>!state.repo.edges.find(e=>e[0]===f.path||e[1]===f.path));
+      const pct=Math.round(orph.length/Math.max(1,files.length)*100);
+      if(pct>r.limit) v.push({path:"(repository)", detail:`${pct}% orphaned files > ${r.limit}%`});
+    } else if(r.type==="forbidEdge"){
+      const from=new RegExp(r.from,"i"), to=new RegExp(r.to,"i");
+      state.repo.edges.filter(([a,b])=>from.test(a)&&to.test(b)).forEach(([a,b])=>v.push({path:a, detail:`imports ${b}`}));
+    } else if(r.type==="forbidContent"){
+      const re=new RegExp(r.pattern,"i");
+      files.filter(f=>f.content&&re.test(f.content)).forEach(f=>v.push({path:f.path, detail:"matched forbidden pattern"}));
+    }
+  }catch(e){ v.push({path:"(rule)", detail:"invalid rule: "+e.message}); }
+  return {...r, violations:v.slice(0,40), count:v.length, pass:v.length===0};
+}
+function evalFitness(){
+  const results=fitRules().map(evalRule);
+  const crit=results.filter(r=>!r.pass&&r.severity==="critical").reduce((s,r)=>s+Math.min(5,r.count),0);
+  const warn=results.filter(r=>!r.pass&&r.severity!=="critical").reduce((s,r)=>s+Math.min(8,r.count),0);
+  const score=Math.max(0, 100 - crit*9 - warn*2);
+  return {results, score};
+}
+function fitHist(){ try{ return JSON.parse(localStorage.getItem(FIT_HIST)||"[]"); }catch(e){ return []; } }
+function fitPush(score){ const h=fitHist(); h.push({t:Date.now(),score}); localStorage.setItem(FIT_HIST, JSON.stringify(h.slice(-40))); return h; }
+
+function viewFitness(root){
+  const {results, score}=evalFitness();
+  const h=fitPush(score);
+  const prev=h.length>1?h[h.length-2].score:score;
+  const drift=score-prev;
+  root.innerHTML=`
+  <div class="card big"><div class="card-h"><h4>Architecture Fitness Functions</h4>
+    <span class="chip ${score>=85?'ok':score>=60?'warn':'bad'}" style="margin-left:auto">${score}/100</span></div>
+    <div class="card-b">
+      <div class="dim" style="font-size:12px">Executable architecture rules, evaluated on every index and every live change. Drift is measured, not remembered.</div>
+      <div style="display:flex;align-items:flex-end;gap:3px;height:56px;margin-top:14px">
+        ${h.slice(-40).map(p=>`<div title="${new Date(p.t).toLocaleString()} · ${p.score}" style="flex:1;max-width:14px;min-width:3px;height:${Math.max(4,p.score*0.5)}px;background:${p.score>=85?'var(--ok)':p.score>=60?'var(--warn)':'var(--bad)'};opacity:.75;border-radius:2px"></div>`).join("")}
+      </div>
+      <div class="dim" style="font-size:11px;margin-top:6px">${h.length} evaluations recorded · drift ${drift>0?"+":""}${drift} since previous run</div>
+    </div></div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
+    ${results.map(r=>`
+      <div class="card big"><div class="card-h"><h4>${r.pass?"✓":r.severity==="critical"?"×":"!"} ${escapeHtml(r.name)}</h4>
+        <span class="chip ${r.pass?'ok':r.severity==='critical'?'bad':'warn'}" style="margin-left:auto">${r.pass?"pass":r.count+" violation"+(r.count>1?"s":"")}</span></div>
+        <div class="card-b">
+          <div class="dim" style="font-size:11px;font-family:var(--mono)">${escapeHtml(r.type)}${r.limit!==undefined?" · limit "+r.limit:""}</div>
+          ${r.violations.length?`<div class="file-list" style="margin-top:8px;max-height:200px;overflow:auto">${r.violations.map(v=>`
+            <div class="fi" data-p="${escapeHtml(v.path)}"><span style="flex:1">${escapeHtml(v.path)}<div class="dim" style="font-size:11px">${escapeHtml(v.detail)}</div></span></div>`).join("")}</div>`
+            :`<div class="dim" style="font-size:12px;margin-top:8px">Holding.</div>`}
+        </div></div>`).join("")}
+  </div>
+
+  <div class="card big"><div class="card-h"><h4>Rule set</h4><span class="dim" style="margin-left:auto;font-size:11px">edit as JSON — persisted locally</span></div>
+    <div class="card-b">
+      <textarea id="frules" style="width:100%;height:200px;background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:10px;font-family:var(--mono);font-size:12px">${escapeHtml(JSON.stringify(fitRules(),null,2))}</textarea>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="primary" id="fsave">Save &amp; re-evaluate</button>
+        <button id="freset">Restore defaults</button>
+        <button id="fexp">Export report (.md)</button>
+      </div></div></div>`;
+  root.querySelectorAll(".fi").forEach(el=>el.onclick=()=>{ if(fileByPath(el.dataset.p)) openFile(el.dataset.p); });
+  document.getElementById("fsave").onclick=()=>{
+    try{ const r=JSON.parse(document.getElementById("frules").value); fitSave(r); toast("Rule set saved"); render(); }
+    catch(e){ toast("Invalid JSON: "+e.message); }
+  };
+  document.getElementById("freset").onclick=()=>{ localStorage.removeItem(FIT_LS); toast("Defaults restored"); render(); };
+  document.getElementById("fexp").onclick=()=>{
+    const md=[`# Architecture fitness — ${state.repo.name}`,``,`Score: **${score}/100** · ${new Date().toLocaleString()}`,``]
+      .concat(results.map(r=>[`## ${r.pass?"PASS":"FAIL"} — ${r.name} (${r.severity})`,
+        ...r.violations.map(v=>`- \`${v.path}\` — ${v.detail}`),``].join("\n"))).join("\n");
+    downloadText("axiom-fitness.md", md);
+  };
+}
+
+/* ================= 3. REFACTOR SIMULATOR ================= */
+const SIM_OPS=[
+  {id:"delete",  name:"Delete / retire file",       weight:1.0, note:"Every importer must be rewritten or repointed."},
+  {id:"breaking",name:"Breaking API change",         weight:0.85,note:"Signature or contract change propagates to all callers."},
+  {id:"split",   name:"Split into modules",          weight:0.6, note:"Import paths change; behaviour preserved."},
+  {id:"rename",  name:"Rename export / symbol",      weight:0.4, note:"Mechanical, but wide."},
+  {id:"perf",    name:"Internal rewrite (no API change)", weight:0.2, note:"Contained — verify via downstream tests only."}
+];
+function simulate(path, opId){
+  const op=SIM_OPS.find(o=>o.id===opId)||SIM_OPS[0];
+  const waves=waveOrder(path);
+  const total=waves.reduce((s,w)=>s+w.length,0);
+  const target=fileByPath(path);
+  const risk=Math.min(100, Math.round((target?.risk||0)*0.5 + total*6*op.weight + (target?.fanIn||0)*4*op.weight));
+  const verdict = risk>=70?{k:"bad",l:"High blast radius — stage behind a flag"}:risk>=40?{k:"warn",l:"Moderate — land in waves with review"}:{k:"ok",l:"Contained — safe to land directly"};
+  const plan=waves.map((w,i)=>{
+    const owners=[...new Set(w.map(suggestOwner))];
+    return {n:i+1, files:w, owners, effort:estimateEffort(w.length, w.length*2)};
+  });
+  const hours = plan.reduce((s,p)=>s + p.files.length * (op.weight*1.5+0.5), (target?.lines||0)/200);
+  return {op, waves:plan, total, risk, verdict, hours:Math.max(1,Math.round(hours)), target};
+}
+function viewSimulate(root){
+  const files=[...state.repo.files].sort((a,b)=>(b.fanIn||0)-(a.fanIn||0));
+  root.innerHTML=`
+  <div class="card big"><div class="card-h"><h4>Refactor Simulator</h4><span class="dim" style="margin-left:auto;font-size:11px">what-if · wave-ordered migration plan</span></div>
+    <div class="card-b"><div class="dim" style="font-size:12px">Model a change before writing it. Axiom walks the reverse-dependency graph to produce a merge-safe ordering: each wave can ship independently once the wave beneath it is green.</div>
+    <div class="row" style="margin-top:12px">
+      <select id="simf" style="flex:1;background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:9px;font-family:var(--mono);font-size:12px">
+        ${files.slice(0,400).map(f=>`<option value="${escapeHtml(f.path)}">${escapeHtml(f.path)} — fan-in ${f.fanIn||0}</option>`).join("")}
+      </select>
+      <select id="simo" style="background:#0a0d13;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:9px">
+        ${SIM_OPS.map(o=>`<option value="${o.id}">${o.name}</option>`).join("")}
+      </select>
+      <button class="primary" id="simgo">Simulate</button>
+    </div></div></div>
+  <div id="simout"></div>`;
+  const run=()=>{
+    const r=simulate(document.getElementById("simf").value, document.getElementById("simo").value);
+    document.getElementById("simout").innerHTML=`
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+      <div class="card big"><div class="card-b"><div class="dim" style="font-size:11px">Verdict</div><div style="font-size:18px;color:var(--${r.verdict.k})">${r.verdict.l}</div></div></div>
+      <div class="card big"><div class="card-b"><div class="dim" style="font-size:11px">Blast radius</div><div style="font-size:22px">${r.total} files</div></div></div>
+      <div class="card big"><div class="card-b"><div class="dim" style="font-size:11px">Change risk</div><div style="font-size:22px">${r.risk}/100</div></div></div>
+      <div class="card big"><div class="card-b"><div class="dim" style="font-size:11px">Est. engineering</div><div style="font-size:22px">~${r.hours}h</div></div></div>
+    </div>
+    <div class="card big"><div class="card-h"><h4>Migration waves (${r.waves.length})</h4>
+      <button id="simcopy" style="margin-left:auto">Copy plan</button></div>
+      <div class="card-b">
+        <div class="dim" style="font-size:12px;margin-bottom:10px">${escapeHtml(r.op.note)}</div>
+        ${r.waves.length? r.waves.map(w=>`
+          <div style="border-left:2px solid var(--line);padding:0 0 14px 14px;margin-left:6px">
+            <div style="display:flex;align-items:center;gap:8px"><span class="chip">Wave ${w.n}</span>
+              <span class="dim" style="font-size:11px">${w.files.length} files · ${w.effort} effort · ${w.owners.join(", ")}</span></div>
+            <div class="file-list" style="margin-top:8px">${w.files.slice(0,25).map(p=>`<div class="fi" data-p="${escapeHtml(p)}"><span style="flex:1">${escapeHtml(p)}</span></div>`).join("")}
+            ${w.files.length>25?`<div class="dim" style="padding:8px;font-size:11px">+${w.files.length-25} more</div>`:""}</div>
+          </div>`).join("")
+        : `<div class="dim" style="font-size:12px">No downstream dependents — this change is fully contained.</div>`}
+      </div></div>`;
+    document.querySelectorAll("#simout .fi").forEach(el=>el.onclick=()=>openFile(el.dataset.p));
+    const copy=document.getElementById("simcopy");
+    if(copy) copy.onclick=()=>copyText([`## Refactor plan — ${r.target?.path}`,`Operation: ${r.op.name}`,
+      `Verdict: ${r.verdict.l} (risk ${r.risk}/100, ${r.total} downstream files, ~${r.hours}h)`,``]
+      .concat(r.waves.map(w=>`### Wave ${w.n} — ${w.effort} — ${w.owners.join(", ")}\n`+w.files.map(p=>`- [ ] ${p}`).join("\n"))).join("\n"));
+  };
+  document.getElementById("simgo").onclick=run;
+  run();
+}
+
+/* ---------- wire v5 into the shell ---------- */
+routes.push(
+  { id: "pack",     label: "Context Compiler", icon: "❖" },
+  { id: "fitness",  label: "Fitness Rules",    icon: "⌬" },
+  { id: "simulate", label: "Refactor Sim",     icon: "⟳" },
+);
+Object.assign(VIEW_MAP, { pack: viewPack, fitness: viewFitness, simulate: viewSimulate });
 
 render();
 </script>
