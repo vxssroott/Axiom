@@ -2620,14 +2620,14 @@ function viewFitness(root){
     <div class="card-b">
       <div class="dim" style="font-size:12px">Executable architecture rules, evaluated on every index and every live change. Drift is measured, not remembered.</div>
       <div style="display:flex;align-items:flex-end;gap:3px;height:56px;margin-top:14px">
-        ${h.slice(-40).map(p=>`<div title="${new Date(p.t).toLocaleString()} · ${p.score}" style="flex:1;min-width:3px;height:${Math.max(4,p.score*0.5)}px;background:${p.score>=85?'var(--ok)':p.score>=60?'var(--warn)':'var(--bad)'};opacity:.75;border-radius:2px"></div>`).join("")}
+        ${h.slice(-40).map(p=>`<div title="${new Date(p.t).toLocaleString()} · ${p.score}" style="flex:1;max-width:14px;min-width:3px;height:${Math.max(4,p.score*0.5)}px;background:${p.score>=85?'var(--ok)':p.score>=60?'var(--warn)':'var(--bad)'};opacity:.75;border-radius:2px"></div>`).join("")}
       </div>
       <div class="dim" style="font-size:11px;margin-top:6px">${h.length} evaluations recorded · drift ${drift>0?"+":""}${drift} since previous run</div>
     </div></div>
 
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
     ${results.map(r=>`
-      <div class="card big"><div class="card-h"><h4>${r.pass?"✅":r.severity==="critical"?"⛔":"⚠️"} ${escapeHtml(r.name)}</h4>
+      <div class="card big"><div class="card-h"><h4>${r.pass?"✓":r.severity==="critical"?"×":"!"} ${escapeHtml(r.name)}</h4>
         <span class="chip ${r.pass?'ok':r.severity==='critical'?'bad':'warn'}" style="margin-left:auto">${r.pass?"pass":r.count+" violation"+(r.count>1?"s":"")}</span></div>
         <div class="card-b">
           <div class="dim" style="font-size:11px;font-family:var(--mono)">${escapeHtml(r.type)}${r.limit!==undefined?" · limit "+r.limit:""}</div>
