@@ -2736,6 +2736,222 @@ routes.push(
 );
 Object.assign(VIEW_MAP, { pack: viewPack, fitness: viewFitness, simulate: viewSimulate });
 
+/* ================================================================
+   v6 — Crypto Billing · On-chain license verification
+   ================================================================ */
+const PAY = {
+  btc: "bc1q0jrmywdtx45q30ek9zh9hysqwvtvau8gsl3kwu",
+  usdt: "0x6355a8F4a5066A3aA6658F1b8a83cc83b0963FA9",
+  usdtContract: "0xdac17f958d2ee523a2206206994597c13d831ec7",
+};
+const PLANS = [
+  { id:"free", name:"Community", usd:0, btc:0, usdt:0, days:0,
+    blurb:"Understand any codebase locally. Nothing sent anywhere.",
+    feats:["Unlimited local & public-repo ingestion","Knowledge Graph + clustering","Semantic search","Impact prediction","Constitution","3 core agents"] },
+  { id:"pro", name:"Pro", usd:49, btc:0.00055, usdt:49, days:30,
+    blurb:"For engineers shipping changes daily.",
+    feats:["Everything in Community","All 6 specialist agents + Run-all sweep","PR Review & blast radius","Context Compiler (token packs)","Refactor Simulator","Live Watch (real-time re-index)","Snapshots & markdown exports"] },
+  { id:"team", name:"Team", usd:199, btc:0.00220, usdt:199, days:30,
+    blurb:"For teams that need institutional memory.",
+    feats:["Everything in Pro","Bi-temporal Memory Store","Temporal Log & as-of queries","Governance & pre-action gates","Agent API (MCP tool surface)","Federation controls","Architecture Fitness rules"] },
+  { id:"life", name:"Lifetime", usd:990, btc:0.01100, usdt:990, days:36500,
+    blurb:"One payment. Every capability, forever.",
+    feats:["Everything in Team","All future releases","Priority roadmap input"] },
+];
+const PREMIUM = {
+  review:"pro", pack:"pro", simulate:"pro",
+  memory:"team", timeline:"team", governance:"team", mcp:"team", federation:"team", fitness:"team",
+};
+const RANK = { free:0, pro:1, team:2, life:3 };
+const LIC_LS = "axLicense";
+
+function license(){
+  try{
+    const l=JSON.parse(localStorage.getItem(LIC_LS)||"null");
+    if(!l) return {plan:"free"};
+    if(l.expires && Date.now()>l.expires) return {plan:"free", expired:true, prev:l};
+    return l;
+  }catch(e){ return {plan:"free"}; }
+}
+function tier(){ return license().plan || "free"; }
+function hasAccess(routeId){
+  const need=PREMIUM[routeId]; if(!need) return true;
+  return RANK[tier()] >= RANK[need];
+}
+function grant(planId, asset, txid){
+  const p=PLANS.find(x=>x.id===planId);
+  const lic={ plan:planId, asset, txid, at:Date.now(), expires: p.days>=36500? null : Date.now()+p.days*864e5 };
+  localStorage.setItem(LIC_LS, JSON.stringify(lic));
+  return lic;
+}
+
+/* ---------- free public-blockchain verification (no API keys) ---------- */
+async function verifyBtc(txid, minBtc){
+  const r=await fetch("https://blockstream.info/api/tx/"+encodeURIComponent(txid.trim()));
+  if(!r.ok) throw new Error("Transaction not found on the Bitcoin network.");
+  const tx=await r.json();
+  const sats=(tx.vout||[]).filter(o=>o.scriptpubkey_address===PAY.btc).reduce((a,o)=>a+o.value,0);
+  const paid=sats/1e8;
+  if(paid<=0) throw new Error("This transaction does not pay the Axiom BTC address.");
+  if(paid+1e-8 < minBtc) throw new Error(`Underpaid: ${paid} BTC received, ${minBtc} BTC required.`);
+  const conf=tx.status && tx.status.confirmed;
+  return { ok:true, paid, confirmed:!!conf, note: conf? `Confirmed in block ${tx.status.block_height}` : "Seen in mempool (0-conf) — access granted provisionally" };
+}
+async function verifyUsdt(txhash, minUsdt){
+  const h=txhash.trim();
+  const r=await fetch("https://api.ethplorer.io/getTxInfo/"+encodeURIComponent(h)+"?apiKey=freekey");
+  if(!r.ok) throw new Error("Transaction not found on Ethereum.");
+  const tx=await r.json();
+  if(tx.error) throw new Error(tx.error.message||"Transaction not found on Ethereum.");
+  const ops=(tx.operations||[]).filter(o=>
+    (o.type==="transfer") &&
+    (o.contract||o.tokenInfo?.address||"").toLowerCase()===PAY.usdtContract &&
+    (o.to||"").toLowerCase()===PAY.usdt.toLowerCase());
+  if(!ops.length) throw new Error("No USDT transfer to the Axiom address in this transaction.");
+  const dec=Number(ops[0].tokenInfo?.decimals||6);
+  const paid=ops.reduce((a,o)=>a+Number(o.value)/Math.pow(10,dec),0);
+  if(paid+0.01 < minUsdt) throw new Error(`Underpaid: ${paid.toFixed(2)} USDT received, ${minUsdt} USDT required.`);
+  return { ok:true, paid, confirmed:!!tx.success, note: tx.success? `Confirmed · ${tx.confirmations||0} confirmations` : "Pending confirmation" };
+}
+
+/* ---------- pricing view ---------- */
+function viewPricing(root, ctx){
+  const lic=license(), t=tier();
+  root.innerHTML=`
+  <div class="card big" style="margin-bottom:14px"><div class="card-b">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <h3 style="margin:0;font-size:16px">Pricing — billed in crypto</h3>
+      <span class="chip"><span class="dot ${t==='free'?'warn':'ok'}"></span>Current plan: ${PLANS.find(p=>p.id===t).name}</span>
+      ${lic.expires?`<span class="chip">Renews/expires ${new Date(lic.expires).toLocaleDateString()}</span>`:""}
+      ${lic.expired?`<span class="chip" style="color:var(--bad)">Previous license expired</span>`:""}
+    </div>
+    <div class="dim" style="font-size:12px;margin-top:8px">No accounts, no card processor, no custody. Pay on-chain, paste the transaction hash, and Axiom verifies it directly against public blockchain nodes (Blockstream for BTC, Ethplorer for ERC-20 USDT) before unlocking premium capability. Your license is stored locally in this browser.</div>
+    ${ctx?`<div class="dim" style="font-size:12px;margin-top:8px;color:var(--warn)">🔒 <b>${escapeHtml(ctx.label)}</b> requires the <b>${PLANS.find(p=>p.id===ctx.need).name}</b> plan.</div>`:""}
+  </div></div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+    ${PLANS.map(p=>{
+      const owned=RANK[t]>=RANK[p.id] && p.id!=="free";
+      return `<div class="card big" style="${ctx&&ctx.need===p.id?'border-color:var(--accent)':''}">
+        <div class="card-h"><h4>${p.name}</h4>${owned?`<span class="chip" style="margin-left:auto;color:var(--ok)">Active</span>`:""}</div>
+        <div class="card-b">
+          <div style="font-size:24px">${p.usd? "$"+p.usd : "Free"}<span class="dim" style="font-size:12px">${p.days&&p.days<36500?" / month":p.usd?" once":""}</span></div>
+          <div class="dim" style="font-size:11px;margin:6px 0 10px">${escapeHtml(p.blurb)}</div>
+          ${p.usd?`<div style="font-family:var(--mono);font-size:11px;line-height:1.8">
+            <div>₿ <b>${p.btc}</b> BTC</div>
+            <div>₮ <b>${p.usdt}</b> USDT <span class="dim">(ERC-20)</span></div></div>`:""}
+          <div style="margin-top:10px;font-size:12px;line-height:1.9">${p.feats.map(f=>`<div>• ${escapeHtml(f)}</div>`).join("")}</div>
+          ${p.usd?`<button class="primary buyBtn" data-p="${p.id}" style="margin-top:12px;width:100%">${owned?"Extend with crypto":"Pay with crypto"}</button>`:""}
+        </div></div>`;
+    }).join("")}
+  </div>
+
+  <div class="card big" id="paybox" style="margin-top:14px;display:none"><div class="card-h"><h4>Checkout</h4>
+    <span class="dim" id="payplan" style="font-size:11px;margin-left:auto"></span></div>
+    <div class="card-b">
+      <div class="row" style="gap:8px;margin-bottom:10px">
+        <button class="asset primary" data-a="btc">₿ Bitcoin</button>
+        <button class="asset" data-a="usdt">₮ USDT (ERC-20)</button>
+      </div>
+      <div class="dim" style="font-size:12px">Send exactly <b id="payamt" style="color:var(--ink)"></b> to:</div>
+      <div style="display:flex;gap:8px;align-items:center;margin:8px 0">
+        <code id="payaddr" style="font-family:var(--mono);font-size:12px;word-break:break-all;background:var(--panel);padding:8px 10px;border-radius:6px;flex:1"></code>
+        <button id="paycopy">Copy</button>
+      </div>
+      <div class="dim" style="font-size:11px">Then paste the transaction hash below. Verification is read-only against public blockchain APIs — Axiom never touches your keys.</div>
+      <div class="row" style="margin-top:10px">
+        <input id="paytx" placeholder="Transaction hash / txid" style="flex:1" />
+        <button class="primary" id="payverify">Verify payment</button>
+      </div>
+      <div id="payout" style="margin-top:10px;font-size:12px"></div>
+    </div></div>
+
+  ${t!=="free"?`<div style="margin-top:12px"><button id="licclear">Remove local license</button></div>`:""}`;
+
+  let plan=PLANS.find(p=>p.id==="pro"), asset="btc";
+  const box=document.getElementById("paybox");
+  function paint(){
+    document.getElementById("payplan").textContent=`${plan.name} · $${plan.usd}${plan.days<36500?" / 30 days":" lifetime"}`;
+    document.getElementById("payamt").textContent = asset==="btc"? plan.btc+" BTC" : plan.usdt+" USDT";
+    document.getElementById("payaddr").textContent = asset==="btc"? PAY.btc : PAY.usdt;
+    root.querySelectorAll(".asset").forEach(b=>b.classList.toggle("primary", b.dataset.a===asset));
+  }
+  root.querySelectorAll(".buyBtn").forEach(b=>b.onclick=()=>{
+    plan=PLANS.find(p=>p.id===b.dataset.p); box.style.display=""; paint();
+    box.scrollIntoView({behavior:"smooth",block:"center"});
+  });
+  root.querySelectorAll(".asset").forEach(b=>b.onclick=()=>{ asset=b.dataset.a; paint(); });
+  document.getElementById("paycopy").onclick=()=>copyText(asset==="btc"?PAY.btc:PAY.usdt);
+  document.getElementById("payverify").onclick=async ()=>{
+    const out=document.getElementById("payout"), tx=document.getElementById("paytx").value.trim();
+    if(!tx){ out.innerHTML=`<span style="color:var(--warn)">Paste the transaction hash first.</span>`; return; }
+    out.innerHTML=`<span class="dim">⛓ Querying the ${asset==="btc"?"Bitcoin":"Ethereum"} network…</span>`;
+    try{
+      const r = asset==="btc" ? await verifyBtc(tx, plan.btc) : await verifyUsdt(tx, plan.usdt);
+      grant(plan.id, asset, tx);
+      out.innerHTML=`<span style="color:var(--ok)">✓ Payment verified — ${r.paid} ${asset.toUpperCase()} received. ${escapeHtml(r.note)}. <b>${plan.name}</b> unlocked.</span>`;
+      toast(`✓ ${plan.name} unlocked on-chain`);
+      setTimeout(()=>render(),900);
+    }catch(e){
+      out.innerHTML=`<span style="color:var(--bad)">✗ ${escapeHtml(e.message||String(e))}</span>
+      <div class="dim" style="font-size:11px;margin-top:6px">If the transaction was just broadcast, wait ~30s for the network to index it and retry.</div>`;
+    }
+  };
+  const lc=document.getElementById("licclear");
+  if(lc) lc.onclick=()=>{ localStorage.removeItem(LIC_LS); toast("License removed"); render(); };
+}
+
+/* ---------- paywall gate ---------- */
+function viewLocked(root, routeId){
+  const need=PREMIUM[routeId], r=routes.find(x=>x.id===routeId);
+  root.innerHTML=`<div class="card big"><div class="card-b" style="text-align:center;padding:40px 20px">
+    <div style="font-size:32px">🔒</div>
+    <h3 style="margin:10px 0 4px;font-size:16px">${escapeHtml(r?.label||routeId)} is a ${PLANS.find(p=>p.id===need).name} capability</h3>
+    <div class="dim" style="font-size:12px;max-width:520px;margin:0 auto 16px">Unlock it with a single on-chain payment in BTC or USDT. Verification happens against public blockchain nodes — no account, no card, no subscription processor.</div>
+    <button class="primary" id="gotoPricing">View crypto pricing</button>
+  </div></div>`;
+  document.getElementById("gotoPricing").onclick=()=>{ state.lockCtx={label:r?.label||routeId, need}; go("pricing"); };
+}
+
+routes.push({ id:"pricing", label:"Pricing", icon:"◇" });
+VIEW_MAP.pricing = (v)=>{ const c=state.lockCtx; state.lockCtx=null; viewPricing(v,c); };
+
+const _renderNavV6 = renderNav;
+renderNav = function(){
+  _renderNavV6();
+  document.querySelectorAll("#nav .item").forEach(el=>{
+    const id=el.dataset.r;
+    if(PREMIUM[id] && !hasAccess(id)){
+      el.style.opacity=".55";
+      const lbl=el.querySelector(".lbl");
+      if(lbl) lbl.innerHTML = lbl.textContent + ' <span style="font-size:10px">🔒</span>';
+    }
+    if(id==="pricing") el.querySelector("span:last-child")?.setAttribute("style","");
+  });
+};
+
+const _renderV6 = render;
+render = function(){
+  if(state.route!=="pricing" && !hasAccess(state.route)){
+    renderNav(); renderTop();
+    const v=document.getElementById("view"); v.innerHTML="";
+    viewLocked(v, state.route);
+    return;
+  }
+  _renderV6();
+};
+
+/* premium action gates */
+const _runAgentV6 = runAgent;
+const FREE_AGENTS = ["architect","security","onboard"];
+runAgent = function(a){
+  if(!FREE_AGENTS.includes(a.id) && RANK[tier()] < RANK.pro){
+    toast("🔒 "+a.name+" is a Pro agent — unlock with crypto");
+    state.lockCtx={label:a.name+" agent", need:"pro"}; go("pricing"); return;
+  }
+  return _runAgentV6(a);
+};
+
 render();
 </script>
 </body>
