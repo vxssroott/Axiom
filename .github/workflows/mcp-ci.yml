@@ -1,0 +1,40 @@
+name: MCP CI
+
+on:
+  push:
+    branches:
+      - feat/axiom-mcp-memory
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          # Install MCP SDK and zod needed by the MCP server/test
+          npm install @modelcontextprotocol/sdk zod --no-save
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint (optional)
+        run: npm run lint || true
+
+      - name: Build
+        run: npm run build
+
+      - name: Run protocol integration tests
+        run: npx vitest run tests/mcp_protocol.test.ts --run
