@@ -1,0 +1,13 @@
+{
+  "mcp": {
+    "host": "http://localhost:8081",
+    "tools": {
+      "search": "/mcp/v1/tools/axiom_search",
+      "context": "/mcp/v1/tools/axiom_context",
+      "dependencies": "/mcp/v1/tools/axiom_dependencies",
+      "impact": "/mcp/v1/tools/axiom_impact",
+      "memory": "/mcp/v1/tools/axiom_memory"
+    },
+    "timeoutMs": 10000
+  }
+}
