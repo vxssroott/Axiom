@@ -11,5 +11,28 @@ export default defineConfig({
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
+    // Static export: prerender every route to HTML so the deploy pipeline
+    // (which serves static output from dist/) can host the app.
+    prerender: { enabled: true },
+  },
+  // Disable the nitro server bundle for production builds: the Freebuff deploy
+  // pipeline serves static files from dist/, and TanStack Start's own build +
+  // prerender produces that static output (nitro's layout breaks prerendering).
+  nitro: false,
+  // Emit the static site directly into dist/ (the deploy pipeline copies dist/*),
+  // not into dist/client/. The SSR bundle (dist/server) is only used by the
+  // prerender step during the build.
+  vite: {
+    environments: {
+      client: {
+        build: { outDir: "dist" },
+      },
+      // Keep the SSR bundle out of dist/ — it's only needed by the prerender
+      // step, and the deploy pipeline copies dist/* to the static host.
+      // (TanStack Start's SSR environment is named "ssr".)
+      ssr: {
+        build: { outDir: "dist-server" },
+      },
+    },
   },
 });
