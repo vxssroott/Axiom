@@ -1,3 +1,11 @@
+/**
+ * Debug-only lightweight JSON HTTP transport.
+ *
+ * This is NOT the MCP protocol — it is a simple JSON-over-HTTP surface kept for
+ * quick manual debugging and smoke tests. The primary MCP server (official
+ * @modelcontextprotocol/sdk, stdio + Streamable HTTP) lives in
+ * `./mcp-server.ts` and is what agents like Drevin should integrate with.
+ */
 import path from "path";
 import fs from "fs/promises";
 import http from "http";

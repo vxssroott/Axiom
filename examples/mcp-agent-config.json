@@ -1,13 +1,18 @@
 {
   "mcp": {
-    "host": "http://localhost:8081",
-    "tools": {
-      "search": "/mcp/v1/tools/axiom_search",
-      "context": "/mcp/v1/tools/axiom_context",
-      "dependencies": "/mcp/v1/tools/axiom_dependencies",
-      "impact": "/mcp/v1/tools/axiom_impact",
-      "memory": "/mcp/v1/tools/axiom_memory"
+    "transport": "stdio",
+    "command": "bun",
+    "args": ["src/mcp/mcp-server.ts", "--repo", "."],
+    "fallback": {
+      "transport": "streamable-http",
+      "url": "http://localhost:8081/mcp"
     },
-    "timeoutMs": 10000
+    "tools": {
+      "axiom_search": "Search the indexed codebase",
+      "axiom_context": "Retrieve grounded engineering context",
+      "axiom_dependencies": "Understand dependency relationships",
+      "axiom_impact": "Determine affected components from a change",
+      "axiom_memory": "Retrieve engineering memory and ADRs"
+    }
   }
 }

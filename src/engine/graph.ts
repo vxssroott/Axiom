@@ -9,7 +9,7 @@ export function buildGraph(files: File[]) {
       if (!imp.startsWith(".")) continue;
       const base = f.path.split("/");
       base.pop();
-      const parts = (base.join("") + "/" + imp).split("/");
+      const parts = (base.join("/") + "/" + imp).split("/");
       // Resolve .. and .
       const stack: string[] = [];
       for (const p of parts) {

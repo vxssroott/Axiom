@@ -10,11 +10,13 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "test": "vitest",
-    "mcp:start": "bun src/mcp/server.ts --repo ./"
+    "test": "vitest run",
+    "mcp:start": "bun src/mcp/mcp-server.ts --repo ./",
+    "mcp:http": "bun src/mcp/mcp-server.ts --repo ./ --port 8081"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-aspect-ratio": "^1.1.8",

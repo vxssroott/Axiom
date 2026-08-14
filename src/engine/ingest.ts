@@ -11,4 +11,3 @@ export function parseFiles(inputs: Array<{ path: string; content: string }>): Fi
   return inputs.map((f) => mkFile(f.path, f.content));
 }
 
-export { buildRepository as buildGraph } from "./graph";
