@@ -165,6 +165,7 @@
       <div class="spacer"></div>
       <span id="liveBadge" style="display:none;align-items:center;gap:6px;font-size:11px;border:1px solid #ef4444;color:#fca5a5;border-radius:999px;padding:3px 10px;margin-right:8px"><span style="width:7px;height:7px;border-radius:50%;background:#ef4444;display:inline-block;animation:axpulse 1.2s infinite"></span>LIVE</span>
       <button id="btnPalette" title="Command palette (⌘K)" style="margin-right:8px">⌘K</button>
+      <button id="btnMCP" title="Connect an external AI agent via MCP" style="margin-right:8px">MCP</button>
       <div class="chip" id="repoChip" style="display:none"><span class="dot ok"></span><span id="repoName">—</span></div>
       <button id="btnReset" style="display:none">Reset</button>
 
@@ -250,6 +251,74 @@ document.getElementById("btnReset").onclick=()=>{
   if(!confirm("Clear current repository?")) return;
   state.repo=null; localStorage.removeItem(LS); state.route="welcome"; render();
 };
+
+/* ---------- MCP integration panel ---------- */
+const AXM_MCP_TOOLS = [
+  ["axiom_search", "Search the indexed codebase"],
+  ["axiom_context", "Retrieve grounded engineering context"],
+  ["axiom_dependencies", "Understand dependency relationships"],
+  ["axiom_impact", "Determine affected components from a change"],
+  ["axiom_memory", "Retrieve engineering memory and ADRs"],
+];
+const AXM_MCP_ENDPOINT = "http://localhost:8081/mcp";
+const AXM_MCP_CMD_STDIO = "bun run mcp:start";
+const AXM_MCP_CMD_HTTP = "bun run mcp:http";
+function copyMCPCommand(text){
+  const done=()=>toast("✅ MCP launch command copied");
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else fallback();
+  function fallback(){
+    const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta);
+    ta.select(); try{document.execCommand("copy");}catch(e){} ta.remove(); done();
+  }
+}
+function openMCPPanel(){
+  const toolsHtml = AXM_MCP_TOOLS.map(([id,desc])=>`
+    <div style="display:flex;align-items:baseline;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">
+      <code class="mono" style="font-size:12px;color:var(--accent)">${id}</code>
+      <span class="dim" style="font-size:12px">${desc}</span>
+    </div>`).join("");
+  openModal("MCP — Connect an external agent", `
+    <div class="dim" style="font-size:12px;line-height:1.7;margin-bottom:14px">
+      MCP (Model Context Protocol) lets an external AI agent such as <b style="color:var(--ink)">Drevin</b> use
+      Axiom's code-understanding capabilities — search, context, dependencies, impact, and engineering memory —
+      against a repository it has indexed.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px">
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+        <div class="mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">Axiom browser app</div>
+        <div style="font-size:12px;color:var(--ok)">● Active</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">Analyzes code locally. Not an MCP client.</div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+        <div class="mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">MCP server</div>
+        <div style="font-size:12px;color:var(--warn)">● Not started</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">Run locally to expose Axiom's tools.</div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+        <div class="mute" style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">External agent / client</div>
+        <div style="font-size:12px;color:var(--accent)">● Connects</div>
+        <div class="dim" style="font-size:11px;margin-top:4px">Speaks MCP to the server above.</div>
+      </div>
+    </div>
+    <div style="margin-bottom:8px"><b style="font-size:12px">Available tools</b></div>
+    ${toolsHtml}
+    <div style="margin-top:14px;margin-bottom:8px"><b style="font-size:12px">Endpoint</b></div>
+    <code class="mono" id="mcpEndpoint" style="font-size:12px;background:var(--panel-2);border:1px solid var(--line);padding:8px 10px;border-radius:6px;display:block;word-break:break-all">${AXM_MCP_ENDPOINT}</code>
+    <div style="margin-top:14px;margin-bottom:8px"><b style="font-size:12px">Launch command</b></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <code class="mono" style="font-size:12px;background:var(--panel-2);border:1px solid var(--line);padding:8px 10px;border-radius:6px;flex:1;overflow:auto;white-space:nowrap">${AXM_MCP_CMD_HTTP}</code>
+      <button class="primary" id="mcpCopy">Copy</button>
+    </div>
+    <div class="dim" style="font-size:11px;margin-top:10px;line-height:1.7">
+      Recommended for agents (stdio): <code class="mono" style="color:var(--ink)">${AXM_MCP_CMD_STDIO}</code> ·
+      Streamable HTTP: <code class="mono" style="color:var(--ink)">${AXM_MCP_CMD_HTTP}</code> serves the endpoint above.
+    </div>
+  `);
+  document.getElementById("mcpCopy").onclick=()=>copyMCPCommand(AXM_MCP_CMD_HTTP);
+}
+document.getElementById("btnMCP").onclick=openMCPPanel;
 
 function setProgress(p){
   const el=document.getElementById("prog"), b=document.getElementById("progB");
