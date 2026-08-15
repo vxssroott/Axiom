@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Axiom — Engineering Memory Infrastructure</title>
+<script defer src="axiom-billing-ui.js"></script>
 <meta name="description" content="Axiom analyzes codebases locally in your browser. No login. Knowledge graph, semantic search, impact prediction, and codebase constitution." />
 <style>
   :root{
@@ -143,9 +144,13 @@
   .modal h3{margin:0 0 12px;font-weight:500}
   .modal pre{background:#000;padding:12px;border-radius:6px;font-size:11px;overflow:auto;max-height:300px;color:var(--ink-dim)}
 
+  #planChip{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #repoChip{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   @media (max-width:800px){
     #app{grid-template-columns:56px 1fr}
     .brand b,nav .item span.lbl,nav .kbd,.side-foot{display:none}
+    #planChip{max-width:150px;font-size:10px}
+    #repoChip{display:none}
   }
 </style>
 </head>
@@ -156,7 +161,7 @@
     <nav id="nav"></nav>
     <div class="side-foot">
       <div>Standalone · No login</div>
-      <div class="mute" style="margin-top:4px">All processing local</div>
+      <div class="mute" style="margin-top:4px">Code analysis local · usage server-metered</div>
     </div>
   </aside>
   <main>
@@ -167,6 +172,7 @@
       <button id="btnPalette" title="Command palette (⌘K)" style="margin-right:8px">⌘K</button>
       <button id="btnMCP" title="Connect an external AI agent via MCP" style="margin-right:8px">MCP</button>
       <div class="chip" id="repoChip" style="display:none"><span class="dot ok"></span><span id="repoName">—</span></div>
+      <div class="chip" id="planChip" title="Plan & usage — click for billing" style="display:none;cursor:pointer;user-select:none;margin-right:8px"></div>
       <button id="btnReset" style="display:none">Reset</button>
 
     </header>
@@ -246,6 +252,28 @@ function renderTop(){
     chip.style.display=""; btn.style.display="";
     document.getElementById("repoName").textContent = state.repo.name + " · " + state.repo.files.length + " files";
   } else { chip.style.display="none"; btn.style.display="none"; }
+  paintPlanChip();
+}
+function paintPlanChip(){
+  const el=document.getElementById("planChip");
+  if(!el) return;
+  if(!state.repo){ el.style.display="none"; return; }
+  try{
+    const lic=license(), ui=usageInfo();
+    if(lic.expired){
+      const prevName=(lic.prev&&PLANS.find(x=>x.id===lic.prev.plan))?PLANS.find(x=>x.id===lic.prev.plan).name:"Previous";
+      el.innerHTML=`<span class="dot bad"></span>EXPIRED · <b style="color:var(--bad)">${prevName} — renew</b>`;
+      el.style.display="";
+      el.onclick=()=>go("pricing");
+      return;
+    }
+    const p=PLANS.find(x=>x.id===lic.plan)||PLANS[0];
+    const color=ui.unlimited?"var(--accent)":ui.exceeded?"var(--bad)":ui.pct>=80?"var(--warn)":"var(--ok)";
+    const val=ui.unlimited?"unlimited":`${ui.used.toLocaleString()} / ${ui.allowance.toLocaleString()} tok`;
+    el.innerHTML=`<span class="dot ${ui.exceeded?"bad":ui.pct>=80?"warn":"ok"}"></span>${p.name} · <b style="color:${color}">${val}</b>`;
+    el.style.display="";
+    el.onclick=()=>go("pricing");
+  }catch(e){ el.style.display="none"; }
 }
 document.getElementById("btnReset").onclick=()=>{
   if(!confirm("Clear current repository?")) return;
@@ -351,7 +379,7 @@ function viewWelcome(root){
   root.innerHTML = `
   <div class="welcome">
     <h1>Engineering Memory Infrastructure</h1>
-    <p class="tag">Most tools optimize writing code. Axiom optimizes <em>understanding</em> codebases — locally, in your browser, with nothing sent anywhere.</p>
+    <p class="tag">Most tools optimize writing code. Axiom optimizes <em>understanding</em> codebases — locally, in your browser, and your code never leaves your machine.</p>
     <div class="drop" id="drop">
       <h3>Analyze any codebase — from anywhere</h3>
       <div class="dim" style="font-size:12px">GitHub · GitLab · Bitbucket · Codeberg · Gitea · any public .zip URL · local folder · pasted snippet. Runs entirely in your browser.</div>
@@ -382,7 +410,7 @@ function viewWelcome(root){
         ["03","Impact Prediction","Score risk for any file before you touch it."],
         ["04","Constitution","Boundaries, ownership, blast radius, dark matter."],
         ["05","Agents","Five specialists analyze architecture, security, infra…"],
-        ["06","Local First","Nothing leaves your browser. Works offline."],
+        ["06","Local First","Code analysis runs in your browser. Works offline."],
       ].map(f=>`<div class="feat"><div class="n">${f[0]}</div><h4>${f[1]}</h4><p>${f[2]}</p></div>`).join("")}
     </div>
   </div>`;
@@ -2425,20 +2453,37 @@ bun run mcp:http      # Streamable HTTP → http://localhost:8081/mcp`)}</pre>
     root.querySelectorAll("#tlist .fi").forEach((el, j) => el.style.background = j === i ? "var(--panel-2)" : "");
   };
   root.querySelectorAll("#tlist .fi").forEach(el => el.onclick = () => sel(+el.dataset.i));
-  document.getElementById("trun").onclick = () => {
-    if(allowanceExceeded()){
-      toast("Token allowance exceeded — renew or upgrade in Pricing");
-      document.getElementById("tout").textContent = JSON.stringify({error:"allowance_exceeded", note:"This plan's token allowance is exhausted. Renew or upgrade in the Pricing view."}, null, 2);
-      return;
-    }
+  document.getElementById("trun").onclick = async () => {
     const t = MCP_TOOLS[cur];
     let args = {}; try { args = JSON.parse(document.getElementById("targs").value || "{}"); } catch (e) { toast("Invalid JSON args"); return; }
+    if(_axSkipUsage){
+      // Auto-demo run at view load: local engine demonstration, not billed.
+      _axSkipUsage=false;
+    } else {
+      if(allowanceExceeded()){
+        toast("Token allowance exceeded — renew or upgrade in Pricing");
+        document.getElementById("tout").textContent = JSON.stringify({error:"allowance_exceeded", note:"This plan's token allowance is exhausted. Renew or upgrade in the Pricing view."}, null, 2);
+        return;
+      }
+      const est = estimateToolUnits(t, args);
+      document.getElementById("tmet").innerHTML = `Authorizing with billing service…`;
+      const auth = await serverConsume("agent.call", est);
+      if(!auth.allowed){
+        const msg = auth.reason==="allowance_exceeded" ? "ALLOWANCE EXCEEDED — your plan has no remaining usage. Renew or upgrade to continue."
+          : auth.reason==="expired_license" ? "LICENSE EXPIRED — renew to continue."
+          : auth.reason==="invalid_license" ? "INVALID LICENSE — verify your payment or license."
+          : auth.reason==="local_payment_only" ? "LOCAL PAYMENT VERIFICATION ONLY — server authorization blocked."
+          : "BILLING UNAVAILABLE — premium operation blocked (fail closed).";
+        document.getElementById("tout").textContent = JSON.stringify({error: auth.reason||"billing_unavailable", note: msg, server: auth.message||""}, null, 2);
+        document.getElementById("tmet").innerHTML = `SERVER ${auth.reason==="allowance_exceeded"||auth.reason==="local_payment_only"?"REJECTED":(auth.status===503||auth.reason==="billing_unavailable"?"UNAVAILABLE":"REJECTED")} · reserved ${est.toLocaleString()} tok not authorized`;
+        toast("🔒 "+msg); return;
+      }
+    }
     const t0 = performance.now();
     let out; try { out = t.run(args); } catch (e) { out = { error: String(e) }; }
     const ms = (performance.now() - t0).toFixed(2);
     const used = tk(out), base = baselineTokensFor(out) || used * 10;
     emit("tool.invoked", { key: t.name, ms: +ms });
-    if(_axSkipUsage) _axSkipUsage=false; else recordUsage(used);
     document.getElementById("tout").textContent = JSON.stringify(out, null, 2);
     document.getElementById("tmet").innerHTML = `${ms} ms · ${used.toLocaleString()} tok returned · vs ${base.toLocaleString()} raw · <span style="color:var(--ok)">${Math.max(1, Math.round(base / Math.max(1, used)))}× reduction</span>`;
   };
@@ -2621,21 +2666,35 @@ function viewPack(root){
   const b=document.getElementById("pkb");
   b.oninput=()=>document.getElementById("pkbv").textContent=(+b.value).toLocaleString()+" tok";
   let last="";
-  function run(){
+  async function run(){
     const q=document.getElementById("pkq").value.trim();
     if(!q){ toast("Describe the task first"); return; }
     if(allowanceExceeded()){ toast("Token allowance exceeded — renew or upgrade in Pricing"); document.getElementById("pkout").textContent="Allowance exceeded — renew or upgrade in the Pricing view to compile packs."; return; }
-    const r=compilePack(q, +b.value);
+    const budget=+b.value;
+    const reserved=Math.max(1000, Math.min(32000, budget));
+    document.getElementById("pkout").textContent="Authorizing with billing service…";
+    const auth=await serverConsume("context.compile", reserved);
+    if(!auth.allowed){
+      const msg = auth.reason==="allowance_exceeded" ? "ALLOWANCE EXCEEDED — your plan has no remaining usage. Renew or upgrade to continue."
+        : auth.reason==="expired_license" ? "LICENSE EXPIRED — renew to continue."
+        : auth.reason==="invalid_license" ? "INVALID LICENSE — verify your payment or license."
+        : auth.reason==="local_payment_only" ? "LOCAL PAYMENT VERIFICATION ONLY — server authorization blocked."
+        : "BILLING UNAVAILABLE — premium operation blocked (fail closed). The browser cannot authorize usage locally.";
+      document.getElementById("pkout").textContent=msg;
+      document.getElementById("pkmet").innerHTML=`SERVER ${auth.reason==="allowance_exceeded"?"REJECTED":"UNAVAILABLE"} · ${escapeHtml(auth.message||"")}`;
+      toast("🔒 "+msg); return;
+    }
+    const r=compilePack(q, budget);
     last=r.text;
     document.getElementById("pkout").textContent=r.text;
     const base=repoTokens();
-    document.getElementById("pkmet").innerHTML=`${r.used.toLocaleString()} tok · ${r.sections.length}/${r.considered} surfaces · vs ${base.toLocaleString()} raw repo · <span style="color:var(--ok)">${Math.max(1,Math.round(base/Math.max(1,r.used)))}× reduction</span>`;
+    const srv=auth.state||{};
+    document.getElementById("pkmet").innerHTML=`${r.used.toLocaleString()} tok observed · ${r.sections.length}/${r.considered} surfaces · vs ${base.toLocaleString()} raw repo · <span style="color:var(--ok)">${Math.max(1,Math.round(base/Math.max(1,r.used)))}× reduction</span>${srv.allowed?`<br><span style="color:var(--ok)">SERVER VERIFIED · reserved ${(srv.consumed??0).toLocaleString()} tok · ${srv.remaining!=null?srv.remaining.toLocaleString()+" remaining":"unlimited"}</span>`:""}`;
     document.getElementById("pksel").innerHTML = r.sections.length? r.sections.map(s=>`
       <div class="fi" data-p="${escapeHtml(s.path)}"><span style="flex:1">${escapeHtml(s.path)}<div class="dim" style="font-size:11px">rank ${s.score.toFixed(1)} · ${s.cost} tok</div></span></div>`).join("")
       : `<div class="dim" style="padding:14px;font-size:12px">No surface matched — try different words.</div>`;
     document.getElementById("pksel").querySelectorAll(".fi").forEach(el=>el.onclick=()=>openFile(el.dataset.p));
     try{ emit("pack.compiled",{key:q, tokens:r.used}); }catch(e){}
-    recordUsage(r.used);
   }
   document.getElementById("pkgo").onclick=run;
   document.getElementById("pkq").onkeydown=e=>{ if(e.key==="Enter") run(); };
@@ -2936,6 +2995,59 @@ function recordUsage(amount){
   }
 }
 
+/* ---------- server-authoritative premium authorization (POST /api/billing/consume) ----------
+   The browser is NEVER the authority. A signed license (or a free-tier client
+   subject) + an idempotency key go to the billing service, which atomically
+   checks and increments server-side usage and returns the authoritative state.
+   Local payment verification (verified==="client") cannot authorize server-
+   metered usage — that path is blocked, not silently downgraded. */
+const SUB_LS = "axSubject";
+let _authState = null; // "verified" | "rejected" | "unavailable"
+async function serverConsume(operation, units){
+  const lic=license();
+  const request_id=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():("r-"+Date.now().toString(36)+Math.random().toString(36).slice(2));
+  let body;
+  if(lic && lic.license && lic.verified==="signed"){
+    body={license:lic.license, units, operation, request_id};
+  } else if(lic && lic.verified==="client"){
+    // Payment verification fallback must never become an entitlement bypass.
+    _authState="rejected";
+    return {allowed:false, reason:"local_payment_only", status:200,
+      message:"Local payment verification cannot authorize server-metered usage — reconnect the billing service to confirm your payment.", state:null};
+  } else {
+    body={plan:"free", subject:clientSubject(), units, operation, request_id};
+  }
+  const res=await billingPost("/api/billing/consume", body);
+  const j=res.json||{};
+  if(res.ok && j.allowed){
+    _authState="verified";
+    if(j.used!=null){ try{ const u=getUsage(); u.used=j.used; localStorage.setItem(USG_LS, JSON.stringify(u)); }catch(e){} }
+    return {allowed:true, reason:null, message:"", state:j, status:res.status};
+  }
+  if(res.ok && j.allowed===false){
+    _authState="rejected";
+    return {allowed:false, reason:j.reason||"denied", message:j.message||"", state:j, status:res.status};
+  }
+  _authState = (res.status===0||res.status===503) ? "unavailable" : "rejected";
+  return {allowed:false, reason:(j.reason||(res.status===503?"billing_unavailable":"network")),
+    message:j.message||"Billing service unreachable — premium operation blocked (fail closed).",
+    state:j, status:res.status};
+}
+function clientSubject(){
+  try{
+    let s=localStorage.getItem(SUB_LS);
+    if(!s){ s=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():("ax-"+Math.random().toString(36).slice(2)+Date.now().toString(36)); localStorage.setItem(SUB_LS,s); }
+    return s;
+  }catch(e){ return "ax-"+Math.random().toString(36).slice(2)+Date.now().toString(36); }
+}
+/* Conservative reservation estimate (token-equivalent) for a premium op. The
+   server authorizes/consumes THIS number up front; actual observed units are
+   shown alongside it in the UI. */
+function estimateToolUnits(t, args){
+  const s=tk(args||{});
+  return Math.max(2000, Math.min(1000000, s*4 + 4000));
+}
+
 /* ---------- billing service client (serverless api/billing.py) ---------- */
 async function billingPost(path, body){
   const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(), 12000);
@@ -2994,7 +3106,7 @@ function viewPricing(root, ctx){
       ${lic.expires?`<span class="chip">Renews/expires ${new Date(lic.expires).toLocaleDateString()}</span>`:""}
       ${lic.expired?`<span class="chip" style="color:var(--bad)">Previous license expired</span>`:""}
     </div>
-    <div class="dim" style="font-size:12px;margin-top:8px">No accounts, no card processor, no custody. Pay on-chain, paste the transaction hash, and Axiom verifies the payment against public blockchain nodes (Blockstream for BTC, Ethplorer for ERC-20 USDT) before issuing a signed license. Your license and usage stay in this browser.</div>
+    <div class="dim" style="font-size:12px;margin-top:8px">No accounts, no card processor, no custody. Pay on-chain, paste the transaction hash, and Axiom verifies the payment against public blockchain nodes (Blockstream for BTC, Ethplorer for ERC-20 USDT) before issuing a signed license. Your license is issued by the billing service and premium usage is authorized server-side.</div>
     ${ctx?`<div class="dim" style="font-size:12px;margin-top:8px;color:var(--warn)">🔒 <b>${escapeHtml(ctx.label)}</b> requires the <b>${PLANS.find(p=>p.id===ctx.need).name}</b> plan.</div>`:""}
   </div></div>
 
@@ -3085,6 +3197,7 @@ function viewPricing(root, ctx){
         <span class="chip"><b>${p.name}</b></span>
         ${lic.billing?`<span class="chip">${billingLabel(lic.billing)}</span>`:""}
         ${vBadge}
+        ${_authState?`<span class="chip" style="color:${_authState==="verified"?"var(--ok)":_authState==="rejected"?"var(--bad)":"var(--warn)"}">SERVER ${_authState==="verified"?"VERIFIED":_authState==="rejected"?"REJECTED":"UNAVAILABLE"}</span>`:""}
         ${lic.paid!=null?`<span class="chip">${escapeHtml(lic.paid)} ${(lic.asset||"").toUpperCase()}${lic.confirmed?" · confirmed":" · provisional (0-conf)"}</span>`:""}
         ${lic.txid?`<span class="chip mono" title="${escapeHtml(lic.txid)}">tx ${escapeHtml(lic.txid).slice(0,10)}…</span>`:""}
       </div>
@@ -3101,7 +3214,8 @@ function viewPricing(root, ctx){
         </div>
         ${ui.unlimited?`<div class="dim" style="font-size:11px">No usage limit on this plan.</div>`:`
         <div style="height:8px;border-radius:4px;background:var(--panel-2);overflow:hidden"><div style="height:100%;width:${ui.pct}%;background:${ui.pct>=100?"var(--bad)":ui.pct>=80?"var(--warn)":"var(--accent)"}"></div></div>
-        <div class="dim" style="font-size:11px;margin-top:4px">${ui.exceeded?"Allowance exceeded — renew or upgrade to continue using premium tooling.":ui.remaining.toLocaleString()+" tokens remaining this period."}</div>`}
+        <div class="dim" style="font-size:11px;margin-top:4px">${ui.exceeded?"Allowance exceeded — renew or upgrade to continue using premium tooling.":ui.remaining.toLocaleString()+" tokens remaining this period."}</div>
+        ${_authState==="unavailable"?'<div class="dim" style="font-size:11px;margin-top:4px;color:var(--warn)">Billing service unavailable — premium operations are blocked (fail closed) until the service returns.</div>':""}`}
       </div>`;
     const rk=document.getElementById("bsRecheck");
     if(rk) rk.onclick=recheckPending;

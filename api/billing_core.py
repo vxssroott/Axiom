@@ -108,6 +108,17 @@ ETHPLORER_API_KEY = os.environ.get("ETHPLORER_API_KEY", "freekey")
 MIN_BTC_CONFIRMATIONS = max(1, int(os.environ.get("MIN_BTC_CONFIRMATIONS", "1")))
 USDT_CHAIN = "ethereum-mainnet"  # Ethplorer is mainnet-scoped; contract pin below enforces it
 
+# ---------------------------------------------------------------------------
+# Operation registry — server-authoritative, extensible. `units` are
+# token-equivalent consumption, the unit Axiom already meters in.
+# ---------------------------------------------------------------------------
+OPERATIONS = {
+    "agent.call":      {"label": "Agent API tool call",  "max_units": 1_000_000},
+    "context.compile": {"label": "Context Compiler",     "max_units": 1_000_000},
+    "memory.query":    {"label": "Memory query",         "max_units": 1_000_000},
+}
+MAX_UNITS_PER_REQUEST = 1_000_000
+
 # Exact-amount tolerance: BTC amounts are integer sats; USDT amounts use 6 decimals.
 BTC_TOLERANCE = Decimal("1e-8")   # 1 sat
 USDT_TOLERANCE = Decimal("1e-6")  # 0.000001 token
@@ -353,6 +364,35 @@ class BillingError(Exception):
     """User-facing billing error (malformed input, unknown plan, ...)."""
 
 
+class UsageIntegrityError(Exception):
+    """Raised when the persistent usage store cannot be trusted (epoch
+    mismatch — state was replaced or wiped). Consumption must FAIL CLOSED
+    rather than silently reset usage to zero and grant a fresh allowance."""
+
+
+# ---------------------------------------------------------------------------
+# Usage epoch — pins a usage store to its deployment identity.
+#
+# The epoch is derived from BILLING_SIGNING_SECRET (or an explicit
+# BILLING_USAGE_EPOCH) and recorded in the store's meta table on first boot.
+# If the store is later opened with a DIFFERENT epoch (storage was replaced /
+# wiped / redeployed with a new secret), initialization raises
+# UsageIntegrityError and the API refuses to serve consumption. This closes
+# the "database disappeared -> usage = 0 -> fresh allowance" hole for every
+# loss mode that leaves a file behind; a full silent wipe that also loses the
+# operator's secret/epoch is not cryptographically detectable and is
+# documented as a residual deployment limitation.
+# ---------------------------------------------------------------------------
+
+
+def _usage_epoch() -> str:
+    s = (
+        os.environ.get("BILLING_USAGE_EPOCH")
+        or os.environ.get("BILLING_SIGNING_SECRET", "")
+        or "dev"
+    )
+    return "v1:" + hmac.new(s.encode("utf-8"), b"axiom-usage-epoch:v1", hashlib.sha256).hexdigest()[:24]
+
 # ---------------------------------------------------------------------------
 # Ledger — crash-consistent AUDIT store (defense-in-depth, not authoritative)
 # ---------------------------------------------------------------------------
@@ -433,18 +473,47 @@ class SqliteLedger(LedgerStore):
 
 
 class UsageStore:
+    """Usage metering per license. Consumptions are ATOMIC: check + increment
+    happen in one transaction, so concurrent consumers can never overspend an
+    allowance, and each (license, request_id) pair is idempotent.
+
+    Storage loss MUST fail closed (see SqliteUsageStore epoch check): usage
+    may never silently reset to zero and grant a fresh allowance.
+    """
+
     def increment(self, license_token: str, amount: int) -> int:
         raise NotImplementedError
 
     def used(self, license_token: str) -> int:
         raise NotImplementedError
 
+    def consume_if_available(self, license_key: str, units: int, operation: str,
+                             request_id: str, allowance: int | None) -> dict:
+        """Atomically consume `units` if `used + units <= allowance`.
+
+        Returns a dict with `status` in {"ok", "replay", "conflict", "denied"}:
+          ok      -> consumed; `used` is the total AFTER this consumption
+          replay  -> same (license, request_id) already consumed identically;
+                     `used` is the current total; NOT consumed again
+          conflict-> request_id reused with different units/operation
+          denied  -> allowance would be exceeded; nothing consumed
+        """
+        raise NotImplementedError
+
 
 class SqliteUsageStore(UsageStore):
-    """SQLite usage store. Atomic increments. Path: BILLING_USAGE_PATH."""
+    """SQLite usage store. Atomic consume via BEGIN IMMEDIATE (write lock at
+    transaction start -> check + increment are serialized against all other
+    writers on the same file, across threads and processes). Idempotency via
+    PRIMARY KEY(license, request_id) + INSERT OR IGNORE. WAL + synchronous=FULL
+    for crash consistency. The store is pinned to a usage EPOCH so a replaced
+    or wiped database fails closed instead of resetting usage to zero.
+    Path: BILLING_USAGE_PATH (default data/axiom_billing.db).
+    """
 
-    def __init__(self, path: str | None = None):
+    def __init__(self, path: str | None = None, epoch: str | None = None):
         self.path = path or os.environ.get("BILLING_USAGE_PATH") or "data/axiom_billing.db"
+        self.epoch = epoch if epoch is not None else _usage_epoch()
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self._schema()
 
@@ -463,28 +532,113 @@ class SqliteUsageStore(UsageStore):
                 " license TEXT NOT NULL, amount INTEGER NOT NULL, at INTEGER NOT NULL)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_license ON usage(license)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS usage_total("
+                " license TEXT PRIMARY KEY, used INTEGER NOT NULL)"
+            )
+            # request_id is a GLOBAL idempotency key: reusing it with different
+            # license/units/operation is a conflict, never a silent mutation.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS usage_consumption("
+                " request_id TEXT PRIMARY KEY, license TEXT NOT NULL, units INTEGER NOT NULL,"
+                " operation TEXT NOT NULL, at INTEGER NOT NULL)"
+            )
+            conn.execute("CREATE TABLE IF NOT EXISTS usage_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            row = conn.execute("SELECT value FROM usage_meta WHERE key='epoch'").fetchone()
+            if row is not None and row[0] != self.epoch:
+                raise UsageIntegrityError(
+                    "usage store epoch mismatch — persistent usage state was replaced or wiped; "
+                    "failing closed (refusing to reset usage to zero)."
+                )
+            if row is None:
+                conn.execute("INSERT OR IGNORE INTO usage_meta(key,value) VALUES('epoch',?)", (self.epoch,))
             conn.commit()
         finally:
             conn.close()
 
+    def _total_locked(self, conn: sqlite3.Connection, license_key: str) -> int:
+        row = conn.execute("SELECT used FROM usage_total WHERE license=?", (license_key,)).fetchone()
+        return int(row[0]) if row else 0
+
     def increment(self, license_token: str, amount: int) -> int:
+        """Legacy/advisory metering (kept for the /usage endpoint). Atomic and
+        idempotent-free; the authoritative path is consume_if_available."""
         amount = max(0, int(amount))
         conn = self._connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT INTO usage(license,amount,at) VALUES(?,?,?)",
                 (license_token, amount, _now()),
             )
+            conn.execute(
+                "INSERT INTO usage_total(license,used) VALUES(?,?) "
+                "ON CONFLICT(license) DO UPDATE SET used=used+excluded.used",
+                (license_token, amount),
+            )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
         return self.used(license_token)
 
     def used(self, license_token: str) -> int:
+        """Current total. Reads max(legacy SUM(usage), usage_total) so stores
+        created before usage_total existed keep reporting correctly."""
         conn = self._connect()
         try:
-            cur = conn.execute("SELECT COALESCE(SUM(amount),0) FROM usage WHERE license=?", (license_token,))
-            return int(cur.fetchone()[0])
+            a = conn.execute("SELECT COALESCE(SUM(amount),0) FROM usage WHERE license=?", (license_token,)).fetchone()[0]
+            b = conn.execute("SELECT COALESCE(MAX(used),0) FROM usage_total WHERE license=?", (license_token,)).fetchone()[0]
+            return max(int(a), int(b))
+        finally:
+            conn.close()
+
+    def consume_if_available(self, license_key: str, units: int, operation: str,
+                             request_id: str, allowance: int | None) -> dict:
+        units = max(1, int(units))
+        conn = self._connect()
+        try:
+            # IMMEDIATE takes the write lock up front: the read-check-write
+            # sequence below is atomic against every other writer.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT license, units, operation FROM usage_consumption WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if row is not None:
+                if row[0] == license_key and row[1] == units and row[2] == operation:
+                    used = self._total_locked(conn, license_key)
+                    conn.commit()
+                    return {"status": "replay", "consumed": units, "used": used, "idempotent": True}
+                conn.rollback()
+                return {"status": "conflict"}
+
+            used = self._total_locked(conn, license_key)
+            if allowance is not None and used + units > allowance:
+                conn.rollback()
+                return {
+                    "status": "denied", "consumed": 0, "used": used,
+                    "remaining": max(0, allowance - used),
+                }
+
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO usage_consumption(request_id,license,units,operation,at) "
+                "VALUES(?,?,?,?,?)",
+                (request_id, license_key, units, operation, _now()),
+            )
+            if cur.rowcount == 0:  # impossible under IMMEDIATE, but be safe
+                conn.rollback()
+                return {"status": "replay", "consumed": units,
+                        "used": self._total_locked(conn, license_key), "idempotent": True}
+            conn.execute(
+                "INSERT INTO usage_total(license,used) VALUES(?,?) "
+                "ON CONFLICT(license) DO UPDATE SET used=used+excluded.used",
+                (license_key, units),
+            )
+            conn.commit()
+            return {"status": "ok", "consumed": units, "used": used + units, "idempotent": False}
         finally:
             conn.close()
 

@@ -586,5 +586,562 @@ class ConcurrencyTests(_WSGIBase):
         self.assertIn("Amount mismatch", p["message"])
 
 
+class UsageStoreCoreTests(unittest.TestCase):
+    """Direct tests of the atomic consume_if_available primitive."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="ax-usage-core-")
+        self.store = core.SqliteUsageStore(os.path.join(self.dir, "usage.db"), epoch="e1")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_success_consumes_and_reports_used(self):
+        r = self.store.consume_if_available("lic-1", 1234, "agent.call", "rid-0001", 500_000)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["consumed"], 1234)
+        self.assertEqual(r["used"], 1234)
+        self.assertFalse(r["idempotent"])
+        self.assertEqual(self.store.used("lic-1"), 1234)
+
+    def test_exact_allowance_boundary(self):
+        r = self.store.consume_if_available("lic-1", 1000, "agent.call", "rid-0001", 1000)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["used"], 1000)
+        r = self.store.consume_if_available("lic-1", 1, "agent.call", "rid-0002", 1000)
+        self.assertEqual(r["status"], "denied")
+        self.assertEqual(r["used"], 1000)  # nothing consumed
+        self.assertEqual(self.store.used("lic-1"), 1000)
+
+    def test_denied_does_not_increment(self):
+        self.store.consume_if_available("lic-1", 500, "agent.call", "rid-0001", 600)
+        r = self.store.consume_if_available("lic-1", 200, "agent.call", "rid-0002", 600)
+        self.assertEqual(r["status"], "denied")
+        self.assertEqual(self.store.used("lic-1"), 500)
+
+    def test_unlimited_allowance_never_denies(self):
+        for i in range(3):
+            r = self.store.consume_if_available("lic-life", 1_000_000, "agent.call", f"rid-{i:04d}", None)
+            self.assertEqual(r["status"], "ok")
+
+    def test_same_request_id_replays_without_double_consume(self):
+        r1 = self.store.consume_if_available("lic-1", 500, "agent.call", "rid-0001", 10_000)
+        r2 = self.store.consume_if_available("lic-1", 500, "agent.call", "rid-0001", 10_000)
+        self.assertEqual(r1["status"], "ok")
+        self.assertEqual(r2["status"], "replay")
+        self.assertTrue(r2["idempotent"])
+        self.assertEqual(r2["used"], 500)  # NOT 1000
+        self.assertEqual(self.store.used("lic-1"), 500)
+
+    def test_request_id_reuse_with_different_units_conflicts(self):
+        self.store.consume_if_available("lic-1", 500, "agent.call", "rid-0001", 10_000)
+        r = self.store.consume_if_available("lic-1", 600, "agent.call", "rid-0001", 10_000)
+        self.assertEqual(r["status"], "conflict")
+
+    def test_request_id_reuse_with_different_operation_conflicts(self):
+        self.store.consume_if_available("lic-1", 500, "agent.call", "rid-0001", 10_000)
+        r = self.store.consume_if_available("lic-1", 500, "memory.query", "rid-0001", 10_000)
+        self.assertEqual(r["status"], "conflict")
+
+    def test_same_request_id_under_different_license_conflicts(self):
+        # request_id is a GLOBAL idempotency key: reusing it with a different
+        # license is a conflict, never a silent mutation.
+        r1 = self.store.consume_if_available("lic-A", 500, "agent.call", "rid-0001", 10_000)
+        r2 = self.store.consume_if_available("lic-B", 500, "agent.call", "rid-0001", 10_000)
+        self.assertEqual(r1["status"], "ok")
+        self.assertEqual(r2["status"], "conflict")
+        self.assertEqual(self.store.used("lic-A"), 500)
+        self.assertEqual(self.store.used("lic-B"), 0)
+
+    def test_legacy_increment_and_used_compat(self):
+        self.store.increment("lic-1", 250)
+        self.assertEqual(self.store.used("lic-1"), 250)
+        r = self.store.consume_if_available("lic-1", 750, "agent.call", "rid-0001", 1_000)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["used"], 1_000)
+        self.assertEqual(self.store.used("lic-1"), 1_000)
+
+    def test_epoch_mismatch_fails_closed(self):
+        path = os.path.join(tempfile.mkdtemp(prefix="ax-epoch2-"), "usage.db")
+        core.SqliteUsageStore(path, epoch="epoch-a")
+        with self.assertRaises(core.UsageIntegrityError):
+            core.SqliteUsageStore(path, epoch="epoch-b")
+
+    def test_usage_survives_restart_with_same_epoch(self):
+        self.store.consume_if_available("lic-1", 100, "agent.call", "rid-0001", 10_000)
+        store2 = core.SqliteUsageStore(self.store.path, epoch="e1")
+        self.assertEqual(store2.used("lic-1"), 100)
+        r = store2.consume_if_available("lic-1", 100, "agent.call", "rid-0002", 10_000)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["used"], 200)
+
+
+class ConsumeTests(_WSGIBase):
+    """WSGI tests for POST /api/billing/consume — server-authoritative."""
+
+    def setUp(self):
+        self._old_secret = billing.SECRET
+        billing.SECRET = self.secret
+        self.dir = tempfile.mkdtemp(prefix="ax-consume-")
+        self.ledger_path = os.path.join(self.dir, "ledger.db")
+        self.usage_path = os.path.join(self.dir, "usage.db")
+        billing.LEDGER = core.SqliteLedger(self.ledger_path)
+        billing.USAGE = core.SqliteUsageStore(self.usage_path, epoch="e1")
+        billing._events.clear()
+        self.tok = core.issue_license(self.secret, "pro", "monthly", "ab" * 32, "btc",
+                                      "0.00055", True, _NOW)
+
+    def tearDown(self):
+        billing.SECRET = self._old_secret
+        billing._events.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _consume(self, body):
+        return self._call("POST", "/api/billing/consume", body)
+
+    def test_success_signed_license(self):
+        status, _, p = self._consume({"license": self.tok, "units": 1234,
+                                      "operation": "context.compile", "request_id": "req-00000001"})
+        self.assertEqual(status.split()[0], "200", p)
+        self.assertTrue(p["allowed"])
+        self.assertEqual(p["consumed"], 1234)
+        self.assertEqual(p["used"], 1234)
+        self.assertEqual(p["allowance"], 500_000)
+        self.assertEqual(p["remaining"], 500_000 - 1234)
+        self.assertEqual(p["plan"], "pro")
+        self.assertEqual(p["expires"], _NOW + 30 * 86400)
+        self.assertFalse(p["idempotent"])
+
+    def test_forged_license_rejected(self):
+        fake = core._sign("wrong-secret", {"v": 1, "plan": "pro", "billing": "monthly",
+                                           "allowance": 500_000, "issued_at": 1, "expires_at": 9999999999,
+                                           "txid": "x", "asset": "btc", "paid": "1", "confirmed": True})
+        status, _, p = self._consume({"license": fake, "units": 100,
+                                      "operation": "agent.call", "request_id": "req-00000002"})
+        self.assertEqual(status.split()[0], "200")
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "invalid_license")
+        self.assertEqual(billing.USAGE.used(fake), 0)
+
+    def test_tampered_license_rejected(self):
+        body, sig = self.tok.split(".")
+        tampered = body + "." + sig[:-2] + ("A" if sig[-2] != "A" else "B")
+        status, _, p = self._consume({"license": tampered, "units": 100,
+                                      "operation": "agent.call", "request_id": "req-00000003"})
+        self.assertEqual(p["reason"], "invalid_license")
+
+    def test_wrong_secret_license_rejected(self):
+        other = core.issue_license("other-secret", "pro", "monthly", "ab" * 32, "btc",
+                                   "0.00055", True, _NOW)
+        status, _, p = self._consume({"license": other, "units": 100,
+                                      "operation": "agent.call", "request_id": "req-00000004"})
+        self.assertEqual(p["reason"], "invalid_license")
+
+    def test_expired_license_rejected(self):
+        payload = {"v": 1, "plan": "pro", "billing": "monthly", "allowance": 500_000,
+                   "issued_at": 1, "expires_at": 2, "txid": "x", "asset": "btc",
+                   "paid": "0.00055", "confirmed": True}
+        token = core._sign(self.secret, payload)
+        with mock.patch.object(core, "_now", return_value=3):
+            status, _, p = self._consume({"license": token, "units": 100,
+                                          "operation": "agent.call", "request_id": "req-00000005"})
+        self.assertEqual(p["reason"], "expired_license")
+
+    def test_invalid_units_rejected(self):
+        for bad in (0, -5, 1.5, True, "lots", 1_000_001):
+            status, _, p = self._consume({"license": self.tok, "units": bad,
+                                          "operation": "agent.call", "request_id": "req-00000006"})
+            self.assertEqual(status.split()[0], "400", f"units={bad!r}")
+            self.assertEqual(p["reason"], "invalid_units")
+        self.assertEqual(billing.USAGE.used(self.tok), 0)
+
+    def test_invalid_operation_rejected(self):
+        status, _, p = self._consume({"license": self.tok, "units": 100,
+                                      "operation": "hack.anything", "request_id": "req-00000007"})
+        self.assertEqual(status.split()[0], "400")
+        self.assertEqual(p["reason"], "invalid_operation")
+
+    def test_missing_or_bad_request_id_rejected(self):
+        status, _, p = self._consume({"license": self.tok, "units": 100, "operation": "agent.call"})
+        self.assertEqual(status.split()[0], "400")
+        self.assertEqual(p["reason"], "invalid_request_id")
+        status, _, p = self._consume({"license": self.tok, "units": 100,
+                                      "operation": "agent.call", "request_id": "short"})
+        self.assertEqual(status.split()[0], "400")
+        self.assertEqual(p["reason"], "invalid_request_id")
+
+    def test_allowance_exceeded(self):
+        self._consume({"license": self.tok, "units": 500_000,
+                       "operation": "agent.call", "request_id": "req-00000008"})
+        status, _, p = self._consume({"license": self.tok, "units": 1,
+                                      "operation": "agent.call", "request_id": "req-00000009"})
+        self.assertEqual(status.split()[0], "200")
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "allowance_exceeded")
+        self.assertEqual(p["used"], 500_000)
+        self.assertEqual(p["remaining"], 0)
+        self.assertEqual(billing.USAGE.used(self.tok), 500_000)
+
+    def test_client_supplied_allowance_is_ignored(self):
+        # The browser cannot raise its own allowance: the server uses the
+        # signed payload's allowance (500k), never the body field.
+        status, _, p = self._consume({"license": self.tok, "units": 500_000,
+                                      "operation": "agent.call", "request_id": "req-00000010",
+                                      "allowance": 999_999_999})
+        self.assertTrue(p["allowed"])
+        status, _, p = self._consume({"license": self.tok, "units": 1,
+                                      "operation": "agent.call", "request_id": "req-00000011",
+                                      "allowance": 999_999_999})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "allowance_exceeded")
+
+    def test_request_id_replay_idempotent(self):
+        body = {"license": self.tok, "units": 5000, "operation": "agent.call",
+                "request_id": "req-00000012"}
+        _, _, p1 = self._consume(body)
+        status, _, p2 = self._consume(body)
+        self.assertEqual(status.split()[0], "200")
+        self.assertTrue(p2["idempotent"])
+        self.assertEqual(p1["used"], p2["used"])
+        self.assertEqual(p2["used"], 5000)  # not 10000
+        self.assertEqual(billing.USAGE.used(self.tok), 5000)
+
+    def test_request_id_conflict_different_units(self):
+        self._consume({"license": self.tok, "units": 5000, "operation": "agent.call",
+                       "request_id": "req-00000013"})
+        status, _, p = self._consume({"license": self.tok, "units": 6000, "operation": "agent.call",
+                                      "request_id": "req-00000013"})
+        self.assertEqual(status.split()[0], "409")
+        self.assertEqual(p["reason"], "request_id_conflict")
+
+    def test_request_id_conflict_different_operation(self):
+        self._consume({"license": self.tok, "units": 5000, "operation": "agent.call",
+                       "request_id": "req-00000014"})
+        status, _, p = self._consume({"license": self.tok, "units": 5000, "operation": "memory.query",
+                                      "request_id": "req-00000014"})
+        self.assertEqual(status.split()[0], "409")
+        self.assertEqual(p["reason"], "request_id_conflict")
+
+    def test_request_id_conflict_different_license(self):
+        tok2 = core.issue_license(self.secret, "team", "monthly", "cd" * 32, "btc",
+                                  "0.00220", True, _NOW)
+        self._consume({"license": self.tok, "units": 5000, "operation": "agent.call",
+                       "request_id": "req-00000015"})
+        status, _, p = self._consume({"license": tok2, "units": 5000, "operation": "agent.call",
+                                      "request_id": "req-00000015"})
+        self.assertEqual(status.split()[0], "409")
+        self.assertEqual(p["reason"], "request_id_conflict")
+
+    def test_free_plan_same_enforcement_path(self):
+        body = {"plan": "free", "subject": "client-abc-1234", "units": 100,
+                "operation": "agent.call", "request_id": "req-00000016"}
+        status, _, p = self._consume(body)
+        self.assertEqual(status.split()[0], "200")
+        self.assertTrue(p["allowed"])
+        self.assertEqual(p["allowance"], 10_000)
+        self.assertEqual(p["plan"], "free")
+        # Exhaust the free allowance — the server decides, the client cannot.
+        self._consume({"plan": "free", "subject": "client-abc-1234", "units": 9_900,
+                       "operation": "agent.call", "request_id": "req-00000017"})
+        status, _, p = self._consume({"plan": "free", "subject": "client-abc-1234", "units": 100,
+                                      "operation": "agent.call", "request_id": "req-00000018"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "allowance_exceeded")
+        self.assertEqual(billing.USAGE.used("free:client-abc-1234"), 10_000)
+
+    def test_claiming_paid_plan_without_license_is_invalid(self):
+        status, _, p = self._consume({"plan": "pro", "subject": "client-abc-1234", "units": 100,
+                                      "operation": "agent.call", "request_id": "req-00000019"})
+        self.assertEqual(p["reason"], "invalid_license")
+        self.assertEqual(billing.USAGE.used("free:client-abc-1234"), 0)
+
+    def test_usage_store_unavailable_fails_closed(self):
+        billing.USAGE = None
+        status, _, p = self._consume({"license": self.tok, "units": 100,
+                                      "operation": "agent.call", "request_id": "req-00000020"})
+        self.assertEqual(status.split()[0], "503")
+        self.assertEqual(p["reason"], "billing_unavailable")
+
+    def test_status_unavailable_fails_closed(self):
+        billing.USAGE = None
+        status, _, p = self._call("GET", "/api/billing/status", qs="license=" + self.tok)
+        self.assertEqual(status.split()[0], "503")
+        self.assertEqual(p["reason"], "billing_unavailable")
+
+    def test_secret_never_in_consume_responses(self):
+        status, _, p = self._consume({"license": self.tok, "units": 1,
+                                      "operation": "agent.call", "request_id": "req-00000021"})
+        self.assertNotIn(self.secret, json.dumps(p))
+
+    def test_operation_registry_known_operations(self):
+        for op in ("agent.call", "context.compile", "memory.query"):
+            status, _, p = self._consume({"license": self.tok, "units": 1,
+                                          "operation": op, "request_id": "req-op-" + op.replace(".", "-")})
+            self.assertEqual(status.split()[0], "200", op)
+
+
+class ConsumeConcurrencyTests(_WSGIBase):
+    """Deterministic concurrency regression: usage can never exceed allowance,
+    and each request_id consumes exactly once."""
+
+    def setUp(self):
+        self._old_secret = billing.SECRET
+        billing.SECRET = self.secret
+        self.dir = tempfile.mkdtemp(prefix="ax-consume-conc-")
+        self.usage_path = os.path.join(self.dir, "usage.db")
+        billing.LEDGER = core.SqliteLedger(os.path.join(self.dir, "ledger.db"))
+        billing.USAGE = core.SqliteUsageStore(self.usage_path, epoch="e1")
+        billing._events.clear()
+        self.tok = core.issue_license(self.secret, "pro", "monthly", "ab" * 32, "btc",
+                                      "0.00055", True, _NOW)
+
+    def tearDown(self):
+        billing.SECRET = self._old_secret
+        billing._events.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_100_concurrent_consumers_cannot_overspend(self):
+        allowance, per = 500_000, 10_000
+        n = 100
+        barrier = threading.Barrier(n)
+        results, lock = [], threading.Lock()
+
+        def worker(i):
+            barrier.wait()
+            status, _, p = self._call(
+                "POST", "/api/billing/consume",
+                {"license": self.tok, "units": per, "operation": "agent.call",
+                 "request_id": f"conc-{i:04d}"})
+            with lock:
+                results.append((status.split()[0], p))
+
+        with mock.patch.object(billing, "_RATE_MAX", 10_000):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        allowed = [p for _, p in results if p.get("allowed")]
+        denied = [p for _, p in results if p.get("allowed") is False]
+        # Exactly 50 successes (500_000 / 10_000), 50 denials — no races.
+        self.assertEqual(len(allowed), 50, f"allowed={len(allowed)} denied={len(denied)}")
+        self.assertEqual(len(denied), 50)
+        for p in denied:
+            self.assertEqual(p["reason"], "allowance_exceeded")
+        self.assertEqual(billing.USAGE.used(self.tok), allowance)
+        # Every success consumed exactly its units once.
+        self.assertEqual(sum(p["consumed"] for p in allowed), allowance)
+
+    def test_100_concurrent_unique_request_ids_each_consumed_once(self):
+        allowance, per = 10_000, 100
+        n = 100
+        barrier = threading.Barrier(n)
+        results, lock = [], threading.Lock()
+
+        def worker(i):
+            barrier.wait()
+            status, _, p = self._call(
+                "POST", "/api/billing/consume",
+                {"license": self.tok, "units": per, "operation": "agent.call",
+                 "request_id": f"uniq-{i:04d}"})
+            with lock:
+                results.append(p)
+
+        with mock.patch.object(billing, "_RATE_MAX", 10_000):
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(len([p for p in results if p.get("allowed")]), n)
+        self.assertEqual(billing.USAGE.used(self.tok), allowance)
+
+    def test_101st_request_at_boundary_is_denied(self):
+        # A license whose payload allowance is exactly 1000 (server-derived).
+        payload = {"v": 1, "plan": "pro", "billing": "monthly", "allowance": 1000,
+                   "issued_at": _NOW, "expires_at": _NOW + 86400, "txid": "x",
+                   "asset": "btc", "paid": "0.00055", "confirmed": True}
+        tok = core._sign(self.secret, payload)
+        allowance, per = 1000, 10
+        with mock.patch.object(billing, "_RATE_MAX", 10_000):
+            for i in range(100):
+                status, _, p = self._call(
+                    "POST", "/api/billing/consume",
+                    {"license": tok, "units": per, "operation": "agent.call",
+                     "request_id": f"bnd-{i:04d}"})
+                self.assertTrue(p["allowed"], f"#{i}: {p}")
+            self.assertEqual(billing.USAGE.used(tok), allowance)
+            status, _, p = self._call(
+                "POST", "/api/billing/consume",
+                {"license": tok, "units": per, "operation": "agent.call",
+                 "request_id": "bnd-9999"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "allowance_exceeded")
+        self.assertEqual(billing.USAGE.used(tok), allowance)  # no overspend
+
+    def test_same_request_id_100_way_race_consumes_once(self):
+        n = 100
+        barrier = threading.Barrier(n)
+        results, lock = [], threading.Lock()
+
+        def worker():
+            barrier.wait()
+            status, _, p = self._call(
+                "POST", "/api/billing/consume",
+                {"license": self.tok, "units": 500, "operation": "agent.call",
+                 "request_id": "race-rid-0001"})
+            with lock:
+                results.append(p)
+
+        with mock.patch.object(billing, "_RATE_MAX", 10_000):
+            threads = [threading.Thread(target=worker) for _ in range(n)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(len(results), n)
+        for p in results:
+            self.assertTrue(p.get("allowed"), p)
+            self.assertEqual(p["used"], 500)
+        self.assertEqual(billing.USAGE.used(self.tok), 500)  # exactly once
+
+
+class UsageStorageSafetyTests(unittest.TestCase):
+    """Storage-loss behavior: usage must fail closed, never reset to zero."""
+
+    def test_build_stores_fails_closed_when_usage_store_unavailable(self):
+        with mock.patch.object(billing, "SqliteUsageStore", side_effect=core.UsageIntegrityError("wiped")):
+            ledger, usage = billing._build_stores()
+        self.assertIsNotNone(ledger)   # ledger is audit-only; degradation is safe
+        self.assertIsNone(usage)       # usage is authoritative; NEVER in-memory fallback
+
+    def test_build_stores_usage_never_degrades_to_memory(self):
+        with mock.patch.object(billing, "SqliteUsageStore", side_effect=OSError("read-only fs")):
+            _, usage = billing._build_stores()
+        self.assertIsNone(usage)
+
+    def test_epoch_mismatch_detects_replaced_database(self):
+        path = os.path.join(tempfile.mkdtemp(prefix="ax-epoch-"), "usage.db")
+        core.SqliteUsageStore(path, epoch="deploy-1").consume_if_available(
+            "lic", 100, "agent.call", "rid-0001", 10_000)
+        with self.assertRaises(core.UsageIntegrityError):
+            core.SqliteUsageStore(path, epoch="deploy-2")
+
+    def test_ledger_loss_does_not_reset_usage(self):
+        d = tempfile.mkdtemp(prefix="ax-split-")
+        ledger = core.SqliteLedger(os.path.join(d, "ledger.db"))
+        usage = core.SqliteUsageStore(os.path.join(d, "usage.db"), epoch="e1")
+        ledger.record("tx", "pro", "monthly", "btc", "lic-1", 1)
+        usage.consume_if_available("lic-1", 250, "agent.call", "rid-0001", 10_000)
+        # Wipe the ledger only — usage must be untouched.
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(os.path.join(d, "ledger.db") + suffix)
+            except FileNotFoundError:
+                pass
+        usage2 = core.SqliteUsageStore(os.path.join(d, "usage.db"), epoch="e1")
+        self.assertEqual(usage2.used("lic-1"), 250)
+
+
+class SecurityReviewTests(_WSGIBase):
+    """Evidence-first security review (§21): each client-side trust boundary is
+    exercised through the real WSGI app. A failing invariant here is a
+    production blocker."""
+
+    def setUp(self):
+        self._old_secret = billing.SECRET
+        billing.SECRET = self.secret
+        self.dir = tempfile.mkdtemp(prefix="ax-secrev-")
+        billing.LEDGER = core.SqliteLedger(os.path.join(self.dir, "ledger.db"))
+        billing.USAGE = core.SqliteUsageStore(os.path.join(self.dir, "usage.db"), epoch="e1")
+        billing._events.clear()
+        self.tok = core.issue_license(self.secret, "pro", "monthly", "ab" * 32, "btc",
+                                      "0.00055", True, _NOW)
+
+    def tearDown(self):
+        billing.SECRET = self._old_secret
+        billing._events.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _consume(self, body):
+        return self._call("POST", "/api/billing/consume", body)
+
+    def test_browser_cannot_increase_allowance(self):
+        # Client claims a 10^12 allowance; the server uses the signed 500k.
+        s, _, p = self._consume({"license": self.tok, "units": 500_000,
+                                 "operation": "agent.call", "request_id": "sec-0001", "allowance": 10**12})
+        self.assertTrue(p["allowed"])
+        s, _, p = self._consume({"license": self.tok, "units": 1,
+                                 "operation": "agent.call", "request_id": "sec-0002", "allowance": 10**12})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "allowance_exceeded")
+
+    def test_browser_cannot_decrease_recorded_usage(self):
+        for bad in (-100, 0):
+            s, _, p = self._consume({"license": self.tok, "units": bad,
+                                     "operation": "agent.call", "request_id": "sec-0003"})
+            self.assertEqual(s.split()[0], "400")
+            self.assertEqual(p["reason"], "invalid_units")
+        self.assertEqual(billing.USAGE.used(self.tok), 0)  # nothing mutated
+
+    def test_browser_cannot_change_expiry(self):
+        forged = {"v": 1, "plan": "pro", "billing": "monthly", "allowance": 500_000,
+                  "issued_at": 1, "expires_at": 10**12, "txid": "x", "asset": "btc",
+                  "paid": "0.00055", "confirmed": True}
+        s, _, p = self._consume({"license": core._sign("wrong-key", forged), "units": 10,
+                                 "operation": "agent.call", "request_id": "sec-0004"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "invalid_license")
+
+    def test_browser_cannot_change_plan(self):
+        s, _, p = self._consume({"plan": "life", "subject": "client-sec-0001", "units": 10,
+                                 "operation": "agent.call", "request_id": "sec-0005"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "invalid_license")
+
+    def test_no_local_authorization_bypass(self):
+        s, _, p = self._consume({"license": "garbage-token", "units": 10,
+                                 "operation": "agent.call", "request_id": "sec-0006"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "invalid_license")
+        self.assertEqual(billing.USAGE.used("garbage-token"), 0)
+
+    def test_expired_license_cannot_consume(self):
+        exp = {"v": 1, "plan": "pro", "billing": "monthly", "allowance": 500_000,
+               "issued_at": 1, "expires_at": 2, "txid": "x", "asset": "btc",
+               "paid": "0.00055", "confirmed": True}
+        token = core._sign(self.secret, exp)
+        with mock.patch.object(core, "_now", return_value=3):
+            s, _, p = self._consume({"license": token, "units": 10,
+                                     "operation": "agent.call", "request_id": "sec-0007"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "expired_license")
+
+    def test_forged_license_cannot_consume(self):
+        forged = {"v": 1, "plan": "pro", "billing": "monthly", "allowance": 500_000,
+                  "issued_at": 1, "expires_at": 10**12, "txid": "x", "asset": "btc",
+                  "paid": "0.00055", "confirmed": True}
+        s, _, p = self._consume({"license": core._sign("attacker-secret", forged), "units": 10,
+                                 "operation": "agent.call", "request_id": "sec-0008"})
+        self.assertFalse(p["allowed"])
+        self.assertEqual(p["reason"], "invalid_license")
+
+    def test_secret_never_in_any_response(self):
+        s, _, p = self._consume({"license": self.tok, "units": 1,
+                                 "operation": "agent.call", "request_id": "sec-0009"})
+        self.assertNotIn(self.secret, json.dumps(p))
+        s, _, p = self._call("GET", "/api/billing/status", qs="license=" + self.tok)
+        self.assertNotIn(self.secret, json.dumps(p))
+
+    def test_oversize_units_rejected_before_mutation(self):
+        s, _, p = self._consume({"license": self.tok, "units": 10**7,
+                                 "operation": "agent.call", "request_id": "sec-0010"})
+        self.assertEqual(s.split()[0], "400")
+        self.assertEqual(p["reason"], "invalid_units")
+        self.assertEqual(billing.USAGE.used(self.tok), 0)
+
 if __name__ == "__main__":
     unittest.main()

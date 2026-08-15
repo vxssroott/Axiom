@@ -21,8 +21,31 @@ Endpoints (same-origin, e.g. https://<deploy>/api/billing/...):
 
   POST /api/billing/usage
       Body: {"license": "<signed token>", "amount": <tokens used>}
-      Meters usage against the license allowance. Only server-signed licenses
-      are accepted, so a browser cannot forge metering.
+      Advisory metering kept for compatibility. The authoritative entitlement
+      path is POST /api/billing/consume.
+
+  POST /api/billing/consume  (server-authoritative premium authorization)
+      Body: {"license": "<signed token>", "units": <int>, "operation":
+             "agent.call"|"context.compile"|"memory.query",
+             "request_id": "<idempotency key>"}
+      OR, for the Free tier (no signed license exists):
+      Body: {"plan": "free", "subject": "<client id>", "units": <int>,
+             "operation": ..., "request_id": ...}
+      The server verifies the license signature + expiry, validates the
+      operation/units, then ATOMICALLY checks and increments server-side usage
+      (consume_if_available). The browser is never the authority: allowance,
+      usage, expiry and remaining are all derived server-side and returned.
+      - allowed   -> 200 {"ok":true,"allowed":true,"consumed","used",
+                          "allowance","remaining","expires",...}
+      - replay    -> same request_id returned idempotently (not consumed again)
+      - rejected  -> 200 {"ok":false,"allowed":false,"reason":
+                          "invalid_license"|"expired_license"|
+                          "allowance_exceeded", ...}
+      - conflict  -> 409 request_id_conflict (key reused with different params)
+      - malformed -> 400 (invalid_units / invalid_operation / bad request_id)
+      - unavailable -> 503 billing_unavailable (secret unset OR usage store
+        unavailable) — premium operations FAIL CLOSED, never fall back to
+        client-side authorization.
 
   GET  /api/billing/status?license=<signed token>
       License status: plan, allowance, usage, expiry, txid, paid, confirmed.
@@ -46,11 +69,18 @@ Persistence:
     so no ledger state is required to prevent double-minting — it is
     structurally impossible to mint two licenses for one payment, even if
     storage is lost, the instance recycles, or the fleet scales out.
-  - SQLite (data/axiom_billing.db) additionally provides a crash-consistent
-    AUDIT ledger (UNIQUE(txid) + INSERT OR IGNORE) and usage metering behind
-    the LedgerStore / UsageStore interfaces. On a read-only filesystem the
-    stores degrade to in-memory SQLite without weakening anti-replay.
-  - Paths overridable via BILLING_LEDGER_PATH / BILLING_USAGE_PATH.
+  - SQLite (data/axiom_billing.db) provides a crash-consistent AUDIT ledger
+    (UNIQUE(txid) + INSERT OR IGNORE) and — critically — the AUTHORITATIVE
+    usage meter (atomic consume_if_available + idempotency keys).
+  - Usage enforcement FAILS CLOSED on any storage problem: a read-only
+    filesystem, replaced/wiped database (epoch mismatch) or corruption makes
+    /consume return 503 billing_unavailable. Usage is never silently reset to
+    zero and never served from an in-memory fallback, so a lost database can
+    never grant a fresh allowance.
+  - Paths overridable via BILLING_LEDGER_PATH / BILLING_USAGE_PATH; the usage
+    store is pinned to an epoch derived from BILLING_SIGNING_SECRET (override
+    with BILLING_USAGE_EPOCH). Rotating the secret after a storage incident
+    intentionally fails closed until BILLING_USAGE_EPOCH is set explicitly.
 
 Local smoke test:
     BILLING_SIGNING_SECRET=dev-secret python3 api/billing.py   # listens :8787
@@ -69,10 +99,13 @@ from urllib.parse import parse_qs, urlparse
 from billing_core import (
     ASSETS,
     BillingError,
+    MAX_UNITS_PER_REQUEST,
     MIN_BTC_CONFIRMATIONS,
+    OPERATIONS,
     PLANS,
     SqliteLedger,
     SqliteUsageStore,
+    UsageIntegrityError,
     VerificationError,
     issue_license,
     usage_status,
@@ -100,27 +133,38 @@ _REASONS = {
 
 
 def _build_stores():
-    """Prefer persistent SQLite; degrade to in-memory on read-only hosts.
+    """Ledger: prefer persistent SQLite; degrade to in-memory on read-only
+    hosts (safe — determinism, not the ledger, is the anti-replay authority).
 
-    Degradation is safe: determinism (not the ledger) is the anti-replay
-    authority, so losing persistence can never mint a second license.
+    Usage: NEVER degrade to in-memory. Usage accounting is the authority for
+    allowance enforcement; an in-memory store would reset usage to zero on
+    every cold start and grant a fresh allowance. If the persistent usage
+    store cannot be opened (read-only FS, epoch mismatch, corruption) the API
+    sets USAGE=None and /consume FAILS CLOSED (503 billing_unavailable).
     """
     try:
-        return SqliteLedger(), SqliteUsageStore()
+        ledger = SqliteLedger()
     except (OSError, sqlite3.OperationalError) as e:
-        print(f"[billing] persistent store unavailable ({e}); using in-memory stores")
-        return SqliteLedger(":memory:"), SqliteUsageStore(":memory:")
+        print(f"[billing] ledger store unavailable ({e}); using in-memory ledger (audit only)")
+        ledger = SqliteLedger(":memory:")
+    try:
+        usage = SqliteUsageStore()
+    except (OSError, sqlite3.OperationalError, UsageIntegrityError) as e:
+        print(f"[billing] usage store unavailable ({e}); premium consumption FAILS CLOSED")
+        usage = None
+    return ledger, usage
 
 
 LEDGER, USAGE = _build_stores()
 
 
 class RequestError(Exception):
-    """Client-facing request error carrying an HTTP status."""
+    """Client-facing request error carrying an HTTP status and a reason code."""
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, reason: str | None = None):
         super().__init__(message)
         self.status = status
+        self.reason = reason
 
 
 # ---------------------------------------------------------------------------
@@ -279,10 +323,105 @@ def _handle_usage(body: dict):
     return 200, status
 
 
+def _handle_consume(body: dict):
+    """Server-authoritative premium authorization.
+
+    The browser supplies a signed license (or free subject) + a unit estimate
+    + an idempotency key. The server verifies signature/expiry/plan,
+    validates the operation and units, then ATOMICALLY checks-and-increments
+    server-side usage. All allowance/usage/expiry values are server-derived;
+    any client-supplied allowance, price, expiry or payment state is ignored.
+    """
+    token = str(body.get("license") or "").strip()
+    subject = str(body.get("subject") or "").strip()
+    plan = str(body.get("plan") or "").strip().lower()
+    operation = str(body.get("operation") or "").strip()
+    rid = str(body.get("request_id") or "").strip()
+    units_raw = body.get("units")
+
+    if operation not in OPERATIONS:
+        raise RequestError(
+            f"Unknown operation '{operation}'. Allowed: {', '.join(sorted(OPERATIONS))}.",
+            400, "invalid_operation",
+        )
+    if not rid:
+        raise RequestError("request_id is required (idempotency key).", 400, "invalid_request_id")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", rid):
+        raise RequestError("request_id must be 8-128 chars of [A-Za-z0-9._:-].", 400, "invalid_request_id")
+    if isinstance(units_raw, bool) or not isinstance(units_raw, int):
+        raise RequestError("units must be an integer.", 400, "invalid_units")
+    if units_raw <= 0:
+        raise RequestError("units must be a positive integer.", 400, "invalid_units")
+    if units_raw > MAX_UNITS_PER_REQUEST:
+        raise RequestError(
+            f"units exceeds the per-request maximum ({MAX_UNITS_PER_REQUEST}).",
+            400, "invalid_units",
+        )
+
+    # ---- identity: signed license OR free subject (never trust the browser) ----
+    if token:
+        try:
+            payload = verify_license(SECRET, token)
+        except BillingError as e:
+            reason = "expired_license" if "expired" in str(e) else "invalid_license"
+            return 200, {"ok": False, "allowed": False, "reason": reason, "message": str(e)}
+        lic_key = token  # the deterministic signed token IS the license identity
+        allowance = payload.get("allowance")
+    elif plan == "free" and subject and re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", subject):
+        # Free tier uses the exact same enforcement path (server-decided
+        # 10k allowance per client subject). A free claim cannot be forged
+        # into a paid plan — paid plans require a signed license.
+        payload = {"plan": "free", "billing": None, "allowance": PLANS["free"]["allowance"]}
+        lic_key = "free:" + subject
+        allowance = payload["allowance"]
+    else:
+        return 200, {
+            "ok": False, "allowed": False, "reason": "invalid_license",
+            "message": "A valid signed license (or a free-tier subject) is required.",
+        }
+
+    if USAGE is None:
+        return 503, {
+            "ok": False, "allowed": False, "reason": "billing_unavailable",
+            "error": "billing_unavailable",
+            "message": "Usage metering store is unavailable — premium operations are blocked (fail closed).",
+        }
+
+    res = USAGE.consume_if_available(lic_key, units_raw, operation, rid, allowance)
+    if res["status"] == "conflict":
+        raise RequestError(
+            "request_id_conflict: this request_id was already used with different parameters.",
+            409, "request_id_conflict",
+        )
+    if res["status"] == "denied":
+        return 200, {
+            "ok": False, "allowed": False, "reason": "allowance_exceeded",
+            "used": res["used"], "allowance": allowance,
+            "remaining": None if allowance is None else max(0, allowance - res["used"]),
+            "message": "This plan's token allowance is exhausted. Renew or upgrade to continue.",
+        }
+
+    used = res["used"]
+    return 200, {
+        "ok": True, "allowed": True, "idempotent": res["status"] == "replay",
+        "consumed": res["consumed"], "used": used,
+        "allowance": allowance,
+        "remaining": None if allowance is None else max(0, allowance - used),
+        "plan": payload.get("plan"), "billing": payload.get("billing"),
+        "expires": payload.get("expires_at"),
+        "operation": operation,
+    }
+
+
 def _handle_status(params: dict):
     token = (params.get("license") or [""])[0]
     if not token:
         raise RequestError("license query parameter is required.")
+    if USAGE is None:
+        return 503, {
+            "ok": False, "error": "billing_unavailable", "reason": "billing_unavailable",
+            "message": "Usage metering store is unavailable.",
+        }
     payload = verify_license(SECRET, token)
     used = USAGE.used(token)
     status = usage_status(payload, used)
@@ -329,13 +468,16 @@ def app(environ, start_response):
             return _respond(start_response, *_handle_verify(_read_json_body(environ)))
         if method == "POST" and path.endswith("/api/billing/usage"):
             return _respond(start_response, *_handle_usage(_read_json_body(environ)))
+        if method == "POST" and path.endswith("/api/billing/consume"):
+            return _respond(start_response, *_handle_consume(_read_json_body(environ)))
         if method == "GET" and path.endswith("/api/billing/status"):
             return _respond(start_response, *_handle_status(parse_qs(environ.get("QUERY_STRING", ""))))
         return _respond(start_response, 404, {"ok": False, "error": "not_found"})
     except RequestError as e:
-        return _respond(start_response, e.status, {
-            "ok": False, "error": "bad_request", "message": str(e),
-        })
+        payload = {"ok": False, "error": "bad_request", "message": str(e)}
+        if e.reason:
+            payload["reason"] = e.reason
+        return _respond(start_response, e.status, payload)
     except VerificationError as e:
         return _respond(start_response, 400, {
             "ok": False, "error": "verification_failed", "message": str(e),
