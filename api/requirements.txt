@@ -1,0 +1,2 @@
+# Axiom billing API is Python-stdlib only (urllib, hmac, hashlib, json).
+# No third-party packages are required.

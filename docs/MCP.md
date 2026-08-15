@@ -1,6 +1,6 @@
 # Axiom MCP Adapter
 
-Axiom exposes its codebase-analysis engine as an MCP (Model Context Protocol) server built on the official [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk). It lets coding agents (e.g. Drevin) query an indexed repository for search, context, dependencies, impact, and engineering memory.
+Axiom exposes its codebase-analysis engine as an MCP (Model Context Protocol) server built on the official [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk). It lets MCP-compatible coding agents (e.g. Drevin, Claude, Cursor — see [AGENTS.md](./AGENTS.md) for the full agent list and per-agent configuration) query an indexed repository for search, context, dependencies, impact, and engineering memory.
 
 What Axiom provides to coding agents
 - Repository ingestion (from arrays of `{path, content}`, or from disk via `loadRepoFromPath`)
@@ -40,6 +40,7 @@ How an external agent consumes Axiom
   bun src/mcp/mcp-server.ts --repo /path/to/repo
   ```
 - Alternatively connect over Streamable HTTP to `http://localhost:8081/mcp` with an MCP client (any transport-compatible client; `src/mcp/mcp-client.ts` shows the official SDK usage).
+- Per-agent configuration (Claude Desktop/Code, Cursor, GitHub Copilot, Cline, Roo Code, Continue, OpenCode, Windsurf, Zed, and generic SDK clients) is documented in [AGENTS.md](./AGENTS.md).
 
 Current limitation: Axiom memory is local/browser-based
 - The canonical engineering memory in this repository is per-user and lives in the browser's `localStorage` (key `axiom.repo.v2`). There is no server-side vector DB or knowledge graph in this repo.

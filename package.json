@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
+    "test:billing": "python3 -m unittest discover -s tests -p 'billing_test.py' -v",
     "mcp:start": "bun src/mcp/mcp-server.ts --repo ./",
     "mcp:http": "bun src/mcp/mcp-server.ts --repo ./ --port 8081"
   },

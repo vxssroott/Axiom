@@ -21,6 +21,9 @@ dist-server
 .wrangler/
 .dev.vars
 
+# Billing API runtime data (anti-replay ledger, usage)
+data/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -31,3 +34,7 @@ dist-server
 *.njsproj
 *.sln
 *.sw?
+
+# Python bytecode
+__pycache__/
+tsconfig.tsbuildinfo
