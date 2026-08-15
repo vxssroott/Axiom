@@ -92,9 +92,16 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from urllib.parse import parse_qs, urlparse
+
+# Serverless platforms differ in how they mount a single-file WSGI app: some
+# import the module with the api/ directory on sys.path, others with only the
+# file's own directory. Ensure the sibling billing_core module is importable
+# either way before importing it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from billing_core import (
     ASSETS,
@@ -442,6 +449,22 @@ def _handle_status(params: dict):
 # ---------------------------------------------------------------------------
 
 
+def _billing_route(path: str) -> str | None:
+    """Map a request path to a billing endpoint name.
+
+    Serverless WSGI mounts differ: some pass the full path
+    ('/api/billing/verify'), some strip the function's route prefix and pass
+    only the remainder ('/verify'), and some prepend a gateway prefix
+    ('/functions/api/billing/verify'). Accept every form; the endpoint name is
+    matched exactly, so no unrelated path can hit a handler.
+    """
+    path = path.rstrip("/") or "/"
+    for ep in ("verify", "usage", "consume", "status"):
+        if path == "/api/billing/" + ep or path == "/" + ep or path.endswith("/api/billing/" + ep):
+            return ep
+    return None
+
+
 def app(environ, start_response):
     method = environ.get("REQUEST_METHOD", "GET").upper()
     path = urlparse(environ.get("PATH_INFO", "")).path.rstrip("/")
@@ -464,13 +487,14 @@ def app(environ, start_response):
         })
 
     try:
-        if method == "POST" and path.endswith("/api/billing/verify"):
+        ep = _billing_route(path)
+        if method == "POST" and ep == "verify":
             return _respond(start_response, *_handle_verify(_read_json_body(environ)))
-        if method == "POST" and path.endswith("/api/billing/usage"):
+        if method == "POST" and ep == "usage":
             return _respond(start_response, *_handle_usage(_read_json_body(environ)))
-        if method == "POST" and path.endswith("/api/billing/consume"):
+        if method == "POST" and ep == "consume":
             return _respond(start_response, *_handle_consume(_read_json_body(environ)))
-        if method == "GET" and path.endswith("/api/billing/status"):
+        if method == "GET" and ep == "status":
             return _respond(start_response, *_handle_status(parse_qs(environ.get("QUERY_STRING", ""))))
         return _respond(start_response, 404, {"ok": False, "error": "not_found"})
     except RequestError as e:

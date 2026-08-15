@@ -473,6 +473,62 @@ class WSGITests(_WSGIBase):
         self.assertNotIn(self.secret, json.dumps(payload))
 
 
+class ServerlessMountTests(_WSGIBase):
+    """The billing WSGI app must serve identically whether the platform passes
+    the full path ('/api/billing/consume') or a prefix-stripped path
+    ('/consume') — both mounting conventions are used by serverless hosts.
+    """
+
+    def setUp(self):
+        self._old_secret = billing.SECRET
+        billing.SECRET = self.secret
+        self.dir = tempfile.mkdtemp(prefix="axiom-billing-")
+        billing.LEDGER = core.SqliteLedger(os.path.join(self.dir, "ledger.db"))
+        billing.USAGE = core.SqliteUsageStore(os.path.join(self.dir, "usage.db"))
+        billing._events.clear()
+
+    def tearDown(self):
+        billing.SECRET = self._old_secret
+        billing._events.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_consume_stripped_path_matches_full_path(self):
+        lic = core.issue_license(self.secret, "pro", "monthly", "ab" * 32, "btc", "0.00055", True, _NOW)
+        # Stripped-path mount: platform passes only '/consume'.
+        status, _, payload = self._call(
+            "POST", "/consume",
+            {"license": lic, "units": 1000, "operation": "agent.call", "request_id": "mount-test-0001"})
+        self.assertEqual(status.split()[0], "200", payload)
+        self.assertTrue(payload["allowed"])
+        self.assertEqual(payload["used"], 1000)
+
+    def test_verify_stripped_path_works(self):
+        with mock.patch.object(core, "_fetch_json", return_value=_btc_tx(55_000)):
+            status, _, payload = self._call(
+                "POST", "/verify",
+                {"txid": "ff" * 32, "asset": "btc", "plan": "pro", "billing": "monthly"})
+        self.assertEqual(status.split()[0], "201", payload)
+        self.assertEqual(payload["state"], "active")
+
+    def test_status_stripped_path_works(self):
+        lic = core.issue_license(self.secret, "life", "once", "cd" * 32, "usdt", "990", True, 1_700_000_000)
+        status, _, payload = self._call("GET", "/status", qs="license=" + lic)
+        self.assertEqual(status.split()[0], "200", payload)
+        self.assertTrue(payload["ok"])
+
+    def test_gateway_prefixed_path_works(self):
+        lic = core.issue_license(self.secret, "life", "once", "ef" * 32, "usdt", "990", True, 1_700_000_000)
+        status, _, payload = self._call("GET", "/functions/api/billing/status", qs="license=" + lic)
+        self.assertEqual(status.split()[0], "200", payload)
+        self.assertTrue(payload["ok"])
+
+    def test_unrelated_paths_still_404(self):
+        status, _, payload = self._call("POST", "/foo/verify", {"x": 1})
+        self.assertEqual(status.split()[0], "404", payload)
+        status, _, payload = self._call("GET", "/other/status")
+        self.assertEqual(status.split()[0], "404", payload)
+
+
 class ConcurrencyTests(_WSGIBase):
     def setUp(self):
         self._old_secret = billing.SECRET
